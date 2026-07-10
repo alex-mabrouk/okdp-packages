@@ -1,0 +1,56 @@
+#
+# Copyright 2025 The OKDP Authors.
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+#
+
+name: Get OCI package prefix
+description: Extract oci_package_prefix from the platform-packages values file (.packageRepository)
+
+inputs:
+  values_path:
+    description: Path to the values file holding packageRepository (e.g. platform-packages-values.yaml)
+    required: true
+
+outputs:
+  oci_package_prefix:
+    description: Last path segment of .packageRepository
+    value: ${{ steps.values.outputs.oci_package_prefix }}
+
+runs:
+  using: composite
+  steps:
+
+    - name: Install yq
+      uses: mikefarah/yq@v4.45.1
+
+    - name: Read packageRepository from values file and compute oci prefix
+      id: values
+      shell: bash
+      run: |
+        set -euo pipefail
+
+        FILE="${{ inputs.values_path }}"
+
+        if [[ ! -f "$FILE" ]]; then
+          echo "Values file not found: $FILE" >&2
+          exit 1
+        fi
+
+        repo="$(yq -e -r '.packageRepository' "$FILE")"
+        prefix="${repo##*/}"
+
+        echo "packageRepository=$repo"
+        echo "oci_package_prefix=$prefix"
+
+        echo "oci_package_prefix=$prefix" >> "$GITHUB_OUTPUT"

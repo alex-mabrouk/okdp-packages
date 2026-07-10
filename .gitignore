@@ -1,0 +1,18 @@
+# IDE files
+.idea/
+.vscode/
+*.swp
+*~
+
+# OS files
+.DS_Store
+
+# Logs
+*.log
+
+# Temporary / local files
+tmp/
+.tmp/
+local/
+*.bak
+*.draft

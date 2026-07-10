@@ -1,0 +1,265 @@
+#
+# Copyright 2026 The OKDP Authors.
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#      http://www.apache.org/licenses/LICENSE-2.0
+#
+#  Unless required by applicable law or agreed to in writing, software
+#  distributed under the License is distributed on an "AS IS" BASIS,
+#  WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+#  See the License for the specific language governing permissions and
+#  limitations under the License.
+#
+
+# RustFS storage ADAPTER (ADR-0001)
+apiVersion: v1alpha1
+name: rustfs
+tag: 0.1.0
+protected: false
+description: |
+  RustFS is a high-performance, S3-compatible distributed object storage written in Rust.
+usage:
+  text: |
+    RustFS S3-compatible object storage.
+    S3 endpoint : {{ .Context.defaultStorage.provider.endpoints.apiUrl
+       | replace "{{ .Release.namespace }}" .Release.spec.targetNamespace
+       | replace "{{ .Release.metadata.name }}" .Release.metadata.name
+       | replace "{{ .Context.ingress.suffix }}" .Context.platform.ingress.suffix }}
+schema:
+  parameters:
+    properties:
+      rootAccessKey: { type: string, required: true, default: "okdpadmin" }
+      rootSecretKey: { type: string, required: true, default: "okdp-rustfs-root-change-me" }
+      dataStorage:   { type: string, required: true, default: "5Gi" }
+      mcImage:       { type: string, required: true, default: "minio/mc:latest" }
+  context:
+    properties:
+      platform:
+        required: true
+        properties:
+          certificateIssuers:
+            required: true
+            properties:
+              selfSigned:
+                properties:
+                  name: { type: string, required: true }
+          storageClass:
+            required: true
+            properties:
+              data: { type: string, required: true }
+          ingress:
+            required: true
+            properties:
+              suffix: { type: string, required: true }
+modules:
+  - name: main
+    timeout: 10m
+    source:
+      helmRepository:
+        url: https://charts.rustfs.com
+        chart: rustfs
+        version: 0.8.0
+    values: |
+      {{- $storage := .Context.defaultStorage -}}
+      {{- $release := printf "%v" .Release.metadata.name -}}
+      {{- $ns := printf "%v" .Release.spec.targetNamespace -}}
+      {{- $domain := printf "%v" .Context.platform.ingress.suffix -}}
+      {{- $issuer := .Context.platform.certificateIssuers.selfSigned.name -}}
+
+      {{- $s3Url := $storage.provider.endpoints.apiUrl
+         | replace "{{ .Release.namespace }}" $ns
+         | replace "{{ .Release.metadata.name }}" $release
+         | replace "{{ .Context.ingress.suffix }}" $domain -}}
+      {{- $consoleUrl := $storage.provider.endpoints.consoleUrl
+         | replace "{{ .Release.namespace }}" $ns
+         | replace "{{ .Release.metadata.name }}" $release
+         | replace "{{ .Context.ingress.suffix }}" $domain -}}
+      {{- $s3Host := regexReplaceAll "^https?://" $s3Url "" -}}
+      {{- $consoleHost := regexReplaceAll "^https?://" $consoleUrl "" -}}
+
+      {{- $svc := printf "%s-svc" $release -}}
+      {{- $rootSecret := printf "%s-secret" $release -}}
+      {{- $endpoint := printf "http://%s.%s:9000" $svc $ns -}}
+
+      {{- /* neutral verb -> S3 actions (admin handled separately via consoleAdmin) */ -}}
+      {{- $verbMap := dict
+          "read"  (list "s3:GetObject" "s3:GetBucketLocation")
+          "list"  (list "s3:ListBucket" "s3:ListAllMyBuckets")
+          "write" (list "s3:PutObject" "s3:DeleteObject" "s3:AbortMultipartUpload") -}}
+
+      nameOverride: "{{ $release }}"
+      fullnameOverride: "{{ $release }}"
+
+      # Single-node (standalone). Kind provides the `standard` storageClass via platform context.
+      mode:
+        standalone:
+          enabled: true
+        distributed:
+          enabled: false
+      replicaCount: 1
+      storageclass:
+        name: "{{ .Context.platform.storageClass.data }}"
+        dataStorageSize: "{{ .Parameters.dataStorage }}"
+        logStorageSize: "256Mi"
+
+      secret:
+        rustfs:
+          access_key: "{{ .Parameters.rootAccessKey }}"
+          secret_key: "{{ .Parameters.rootSecretKey }}"
+
+      # The chart's own ingress targets the console port; we manage BOTH ingresses (S3 + console)
+      # ourselves via extraManifests so the S3 API is exposed on the endpoint port (9000).
+      ingress:
+        enabled: false
+
+      # -- Adapter-owned manifests: S3 API ingress + console ingress + provisioning (ConfigMap + Job).
+      extraManifests:
+        # ---- S3 API ingress (endpoint port 9000) ----
+        - apiVersion: networking.k8s.io/v1
+          kind: Ingress
+          metadata:
+            name: {{ $release }}-s3
+            namespace: {{ $ns }}
+            annotations:
+              cert-manager.io/cluster-issuer: "{{ $issuer }}"
+              nginx.ingress.kubernetes.io/proxy-body-size: "0"
+          spec:
+            ingressClassName: nginx
+            rules:
+              - host: {{ $s3Host }}
+                http:
+                  paths:
+                    - path: /
+                      pathType: Prefix
+                      backend:
+                        service:
+                          name: {{ $svc }}
+                          port:
+                            name: endpoint
+            tls:
+              - hosts: [{{ $s3Host }}]
+                secretName: {{ $release }}-s3-tls
+        # ---- Console ingress (console port 9001) ----
+        - apiVersion: networking.k8s.io/v1
+          kind: Ingress
+          metadata:
+            name: {{ $release }}-console
+            namespace: {{ $ns }}
+            annotations:
+              cert-manager.io/cluster-issuer: "{{ $issuer }}"
+              nginx.ingress.kubernetes.io/proxy-body-size: "0"
+          spec:
+            ingressClassName: nginx
+            rules:
+              - host: {{ $consoleHost }}
+                http:
+                  paths:
+                    - path: /
+                      pathType: Prefix
+                      backend:
+                        service:
+                          name: {{ $svc }}
+                          port:
+                            name: console
+            tls:
+              - hosts: [{{ $consoleHost }}]
+                secretName: {{ $release }}-console-tls
+        # ---- Provisioning: buckets + users + policies from the neutral contract ----
+        - apiVersion: v1
+          kind: ConfigMap
+          metadata:
+            name: {{ $release }}-provision
+            namespace: {{ $ns }}
+          data:
+            {{- /* one IAM policy file per non-admin grant */ -}}
+            {{- range $g := $storage.grants }}
+            {{- $isAdmin := or ($g.sts | default false) (has "admin" ($g.actions | default list)) }}
+            {{- if not $isAdmin }}
+            {{- $actions := list }}
+            {{- range $v := $g.actions }}{{- with (index $verbMap $v) }}{{- $actions = concat $actions . }}{{- end }}{{- end }}
+            {{- $resources := list }}
+            {{- range $b := ($g.buckets | default (list "*")) }}
+            {{- if eq $b "*" }}{{- $resources = concat $resources (list "arn:aws:s3:::*" "arn:aws:s3:::*/*") }}
+            {{- else }}{{- $resources = concat $resources (list (printf "arn:aws:s3:::%s" $b) (printf "arn:aws:s3:::%s/*" $b)) }}{{- end }}
+            {{- end }}
+            policy-{{ $g.principal }}.json: |
+              {{ dict "Version" "2012-10-17" "Statement" (list (dict "Effect" "Allow" "Action" ($actions | uniq) "Resource" ($resources | uniq))) | toJson }}
+            {{- end }}
+            {{- end }}
+            provision.sh: |
+              #!/bin/sh
+              set -eu
+              echo ">> waiting for RustFS admin API at {{ $endpoint }} ..."
+              until mc alias set rf "{{ $endpoint }}" "$ROOT_AK" "$ROOT_SK" >/dev/null 2>&1; do sleep 3; done
+              echo ">> creating buckets"
+              {{- range $b := $storage.buckets }}
+              mc mb --ignore-existing rf/{{ $b.name }}
+              {{- if $b.anonymousRead }}
+              mc anonymous set download rf/{{ $b.name }}
+              {{- end }}
+              {{- end }}
+              echo ">> creating users + policies from grants"
+              {{- range $g := $storage.grants }}
+              {{- $isAdmin := or ($g.sts | default false) (has "admin" ($g.actions | default list)) }}
+              {{- $ak := printf "G_%s_AK" $g.principal }}
+              {{- $sk := printf "G_%s_SK" $g.principal }}
+              # grant: {{ $g.principal }}{{ if $isAdmin }} (admin/sts -> consoleAdmin){{ end }}
+              mc admin user add rf "${{ $ak }}" "${{ $sk }}"
+              {{- if $isAdmin }}
+              mc admin policy attach rf consoleAdmin --user "${{ $ak }}" || true
+              {{- else }}
+              mc admin policy create rf okdp-{{ $g.principal }} /policies/policy-{{ $g.principal }}.json || true
+              mc admin policy attach rf okdp-{{ $g.principal }} --user "${{ $ak }}" || true
+              {{- end }}
+              {{- end }}
+              echo ">> provisioning complete"
+        - apiVersion: batch/v1
+          kind: Job
+          metadata:
+            name: {{ $release }}-provision
+            namespace: {{ $ns }}
+          spec:
+            backoffLimit: 20
+            template:
+              metadata:
+                name: {{ $release }}-provision
+              spec:
+                restartPolicy: OnFailure
+                containers:
+                  - name: mc
+                    image: "{{ .Parameters.mcImage }}"
+                    command: ["/bin/sh", "/scripts/provision.sh"]
+                    env:
+                      - name: ROOT_AK
+                        valueFrom: { secretKeyRef: { name: {{ $rootSecret }}, key: RUSTFS_ACCESS_KEY } }
+                      - name: ROOT_SK
+                        valueFrom: { secretKeyRef: { name: {{ $rootSecret }}, key: RUSTFS_SECRET_KEY } }
+                      {{- range $g := $storage.grants }}
+                      - name: G_{{ $g.principal }}_AK
+                        valueFrom: { secretKeyRef: { name: {{ $g.credentialsSecret.name }}, key: {{ $g.credentialsSecret.accessKeyKey }} } }
+                      - name: G_{{ $g.principal }}_SK
+                        valueFrom: { secretKeyRef: { name: {{ $g.credentialsSecret.name }}, key: {{ $g.credentialsSecret.secretKeyKey }} } }
+                      {{- end }}
+                    volumeMounts:
+                      - name: scripts
+                        mountPath: /scripts
+                      - name: policies
+                        mountPath: /policies
+                volumes:
+                  - name: scripts
+                    configMap:
+                      name: {{ $release }}-provision
+                      items:
+                        - key: provision.sh
+                          path: provision.sh
+                  - name: policies
+                    configMap:
+                      name: {{ $release }}-provision
+
+roles:
+  - storage
+dependencies:
+  - ingress

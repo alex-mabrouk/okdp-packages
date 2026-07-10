@@ -1,0 +1,93 @@
+#
+# Copyright 2026 The OKDP Authors.
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+#
+
+# Adapted from OKDP/platform-packages. Both CI and publish target GHCR with the
+# workflow GITHUB_TOKEN (no external registry, no extra secrets):
+#   CI      -> ghcr.io/<owner>/<repo>/<prefix>/<package>   (repo-scoped, throwaway)
+#   publish -> ghcr.io/<owner>/<prefix>/<package>          (the path releases consume)
+
+name: Build and push KuboCD packages
+
+on:
+  workflow_call:
+    inputs:
+      publish_to_registry:
+        description: Whether to push to the public publish path (vs the CI path)
+        required: false
+        type: string
+        default: "false"
+      oci_package_prefix:
+        description: "Last path segment of packageRepository, e.g. okdp-packages"
+        required: true
+        type: string
+      runs-on:
+        description: GitHub Actions Runner image
+        required: true
+        type: string
+
+defaults:
+  run:
+    shell: bash
+
+jobs:
+
+  kubocd-package:
+    runs-on: ${{ inputs.runs-on }}
+    steps:
+
+      - name: Checkout Repo ⚡️
+        uses: actions/checkout@v4
+
+      - name: Login to ghcr.io 🔐
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ github.token }}
+
+      - name: Set CI OCI prefix (repo-scoped) 📦
+        if: inputs.publish_to_registry == 'false'
+        run: |
+          echo "OCI_REPO_PREFIX=ghcr.io/${GITHUB_REPOSITORY@L}/${{ inputs.oci_package_prefix }}" >> $GITHUB_ENV
+
+      - name: Set publish OCI prefix (owner-scoped) 📦
+        if: inputs.publish_to_registry == 'true'
+        run: |
+          echo "OCI_REPO_PREFIX=ghcr.io/${GITHUB_REPOSITORY_OWNER@L}/${{ inputs.oci_package_prefix }}" >> $GITHUB_ENV
+
+      - name: Install KuboCD CLI 🛠️
+        run: |
+          # Temporary fix for: https://github.com/kubocd/kubocd/issues/2
+          curl -L -o kubocd https://github.com/kubocd/kubocd/releases/download/v0.2.2/kubocd_fix2_Linux_x86_64
+          chmod +x kubocd
+          sudo mv kubocd /usr/local/bin/
+          kubocd version
+
+      - name: Find KuboCD packages 🔎
+        run: |
+          KUBOCD_PACKAGES=$(find packages -type f \( -name "*.yaml" -o -name "*.yml" \) -exec grep -l '^modules:' {} \; | tr '\n' ' ')
+          echo "KUBOCD_PACKAGES=$KUBOCD_PACKAGES" >> $GITHUB_ENV
+
+      - name: Build and push KuboCD packages 📦
+        run: |
+          for package in ${KUBOCD_PACKAGES}
+          do
+             echo "kubocd package ${package} --ociRepoPrefix $OCI_REPO_PREFIX"
+             kubocd package ${package} --ociRepoPrefix $OCI_REPO_PREFIX
+          done
+        env:
+          KCD_OCI_GHCR_IO_USER: ${{ github.actor }}
+          KCD_OCI_GHCR_IO_SECRET: ${{ github.token }}
