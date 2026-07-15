@@ -1,0 +1,66 @@
+# OKDP web console (new UI), packaged from the alex-mabrouk fork (branch
+# feat/missing-services) pending upstream integration. The console is a static
+# Vite bundle served by nginx; its ingress routes /api to the in-cluster
+# okdp-server Service so the browser stays same-origin (no CORS).
+#
+# Note: the OIDC configuration (issuer, clientId) is baked into the bundle at
+# image build time (src/config/environment.ts) — this image targets the
+# sandbox Keycloak. Runtime configuration is a future upstream improvement.
+apiVersion: v1alpha1
+name: okdp-ui
+tag: 0.6.0-p01
+protected: false
+description: |
+  OKDP UI (new console) - Web interface for the Open Kubernetes Data Platform
+usage:
+  text: |
+    Access the console at https://console.{{ .Context.platform.ingress.suffix }}
+schema:
+  parameters:
+    properties:
+      backendService:
+        type: string
+        default: "okdp-server-new-main"
+        description: "In-cluster okdp-server Service name (must resolve in the release namespace)"
+  context:
+    properties:
+      platform:
+        required: true
+        properties:
+          ingress:
+            required: true
+            properties:
+              suffix: { type: string, required: true }
+          certificateIssuers:
+            required: true
+            properties:
+              selfSigned:
+                properties:
+                  name: { type: string, required: true }
+modules:
+  - name: main
+    timeout: 10m
+    source:
+      oci:
+        repository: ghcr.io/alex-mabrouk/okdp-charts/okdp-ui
+        tag: 0.6.0
+    values: |
+      image:
+        repository: ghcr.io/alex-mabrouk/okdp-images/okdp-ui
+        tag: "0.6.0"
+        pullPolicy: Always
+
+      backend:
+        service: {{ .Parameters.backendService }}
+        port: 8093
+
+      ingress:
+        className: nginx
+        host: console.{{ .Context.platform.ingress.suffix }}
+        clusterIssuer: {{ .Context.platform.certificateIssuers.selfSigned.name }}
+        tlsSecretName: okdp-ui-new-tls
+
+roles:
+  - okdp-ui
+dependencies:
+  - ingress
