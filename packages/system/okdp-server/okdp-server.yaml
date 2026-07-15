@@ -1,0 +1,53 @@
+# OKDP control-plane server (new console backend), packaged from the
+# alex-mabrouk fork (branch feat/identity-provider-contract) pending upstream
+# integration — see OKDP/okdp-sandbox integration issue.
+apiVersion: v1alpha1
+name: okdp-server
+tag: 0.6.0-p01
+protected: false
+description: |
+  OKDP Server (new console) - API backend for the Open Kubernetes Data Platform
+usage:
+  text: |
+    OKDP Server exposes the control-plane API consumed by the new OKDP UI.
+    In-cluster endpoint: http://okdp-server-main.{{ .Release.spec.targetNamespace }}:8093
+schema:
+  context:
+    properties:
+      platform:
+        required: true
+        properties:
+          ingress:
+            required: true
+            properties:
+              suffix: { type: string, required: true }
+modules:
+  - name: main
+    timeout: 10m
+    source:
+      oci:
+        repository: ghcr.io/alex-mabrouk/okdp-charts/okdp-server
+        tag: 0.6.0
+    values: |
+      image:
+        repository: ghcr.io/alex-mabrouk/okdp-images/okdp-server
+        tag: "0.6.0"
+        pullPolicy: Always
+
+      configuration:
+        platformNamespace: okdp-system
+        kubocdNamespace: kubocd-system
+        # The sandbox exposes the server contracts (okdp.*, ingress.*,
+        # identity.*) in its "platform" Context — bound here, in the
+        # deployment layer, so the server code keeps its neutral default.
+        contextName: platform
+        contextNamespace: kubocd-system
+        # The new UI is same-origin in production (/api); this origin only
+        # serves browser calls that hit the API host directly.
+        allowedOrigins: https://okdp-ui.{{ .Context.platform.ingress.suffix }}
+        logLevel: info
+        releaseInterval: 30m
+        releaseTimeout: 10m
+
+roles:
+  - okdp-server

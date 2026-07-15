@@ -9,15 +9,24 @@ This repository follows the same conventions as [`OKDP/platform-packages`](https
 | Package | Role | Notes |
 |---|---|---|
 | [`rustfs`](./packages/services/rustfs/rustfs.yaml) | S3-compatible object storage | Binds the OKDP `defaultStorage` provider contract |
+| [`okdp-server`](./packages/system/okdp-server/okdp-server.yaml) | New OKDP console backend | Built from the fork pending upstream integration; image + chart under `ghcr.io/alex-mabrouk` |
 
 ## Structure
 
 ```
 packages/
-└── services/
-    └── rustfs/
+├── services/               # Data/application services (catalog)
+│   └── rustfs/
+└── system/                 # Platform components
+    └── okdp-server/
 okdp-packages-values.yaml   # OCI publish target (packageRepository), read by CI
 ```
+
+Companion artifacts consumed by the packages live under the same account:
+
+- `ghcr.io/alex-mabrouk/okdp-images/*` — container images (e.g. the new okdp-server,
+  built from the [`okdp-control-plane-server`](https://github.com/alex-mabrouk/okdp-control-plane-server) fork)
+- `ghcr.io/alex-mabrouk/okdp-charts/*` — Helm charts pushed as OCI artifacts
 
 ## Registry layout
 
@@ -31,8 +40,16 @@ okdp-packages-values.yaml   # OCI publish target (packageRepository), read by CI
 ## Building locally
 
 ```bash
+# A service package
 kubocd package ./packages/services/rustfs/rustfs.yaml --ociRepoPrefix ghcr.io/alex-mabrouk/okdp-packages
+
+# A system package
+kubocd package ./packages/system/okdp-server/okdp-server.yaml --ociRepoPrefix ghcr.io/alex-mabrouk/okdp-packages
 ```
+
+> ⚠️ Reminder: after the first publish of any new package (or after recreating
+> one), set its visibility to *public* in GitHub → Packages so the cluster can
+> pull it anonymously.
 
 ## License
 
