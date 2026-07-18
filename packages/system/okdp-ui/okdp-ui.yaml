@@ -1,14 +1,14 @@
 # OKDP web console (new UI), packaged from the alex-mabrouk fork (branch
-# feat/missing-services) pending upstream integration. The console is a static
-# Vite bundle served by nginx; its ingress routes /api to the in-cluster
-# okdp-server Service so the browser stays same-origin (no CORS).
+# feat/identity-capabilities) pending upstream integration. The console is a
+# static Vite bundle served by nginx; its ingress routes /api to the
+# in-cluster okdp-server Service so the browser stays same-origin (no CORS).
 #
-# Note: the OIDC configuration (issuer, clientId) is baked into the bundle at
-# image build time (src/config/environment.ts) — this image targets the
-# sandbox Keycloak. Runtime configuration is a future upstream improvement.
+# The OIDC client is resolved at runtime from GET /api/capabilities (Context
+# identity.oidc); the values baked into the bundle only serve as a fallback
+# for legacy or unreachable servers.
 apiVersion: v1alpha1
 name: okdp-ui
-tag: 0.6.0-p02
+tag: 0.6.0-p03
 protected: false
 description: |
   OKDP UI (new console) - Web interface for the Open Kubernetes Data Platform
@@ -47,7 +47,7 @@ modules:
     values: |
       image:
         repository: ghcr.io/alex-mabrouk/okdp-images/okdp-ui
-        tag: "0.6.0"
+        tag: "0.6.1"
         pullPolicy: Always
 
       backend:

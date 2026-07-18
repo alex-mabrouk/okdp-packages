@@ -3,7 +3,7 @@
 # integration — see OKDP/okdp-sandbox integration issue.
 apiVersion: v1alpha1
 name: okdp-server
-tag: 0.6.0-p01
+tag: 0.6.0-p02
 protected: false
 description: |
   OKDP Server (new console) - API backend for the Open Kubernetes Data Platform
@@ -31,7 +31,7 @@ modules:
     values: |
       image:
         repository: ghcr.io/alex-mabrouk/okdp-images/okdp-server
-        tag: "0.6.0"
+        tag: "0.6.1"
         pullPolicy: Always
 
       configuration:
