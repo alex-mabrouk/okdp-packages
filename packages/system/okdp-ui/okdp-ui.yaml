@@ -8,19 +8,19 @@
 # sandbox Keycloak. Runtime configuration is a future upstream improvement.
 apiVersion: v1alpha1
 name: okdp-ui
-tag: 0.6.0-p01
+tag: 0.6.0-p02
 protected: false
 description: |
   OKDP UI (new console) - Web interface for the Open Kubernetes Data Platform
 usage:
   text: |
-    Access the console at https://console.{{ .Context.platform.ingress.suffix }}
+    Access the console at https://okdp-ui.{{ .Context.platform.ingress.suffix }}
 schema:
   parameters:
     properties:
       backendService:
         type: string
-        default: "okdp-server-new-main"
+        default: "okdp-server-main"
         description: "In-cluster okdp-server Service name (must resolve in the release namespace)"
   context:
     properties:
@@ -56,9 +56,10 @@ modules:
 
       ingress:
         className: nginx
-        host: console.{{ .Context.platform.ingress.suffix }}
+        # Takes over the host of the legacy console it replaces.
+        host: okdp-ui.{{ .Context.platform.ingress.suffix }}
         clusterIssuer: {{ .Context.platform.certificateIssuers.selfSigned.name }}
-        tlsSecretName: okdp-ui-new-tls
+        tlsSecretName: okdp-ui-tls
 
 roles:
   - okdp-ui
