@@ -17,7 +17,7 @@
 # RustFS storage ADAPTER (ADR-0001)
 apiVersion: v1alpha1
 name: rustfs
-tag: 0.1.0
+tag: 0.1.1
 protected: false
 description: |
   RustFS is a high-performance, S3-compatible distributed object storage written in Rust.
@@ -31,8 +31,8 @@ usage:
 schema:
   parameters:
     properties:
-      rootAccessKey: { type: string, required: true, default: "okdpadmin" }
-      rootSecretKey: { type: string, required: true, default: "okdp-rustfs-root-change-me" }
+      rootAccessKey: { type: string, required: true, default: "okdpadmin", minLength: 3, maxLength: 20 }
+      rootSecretKey: { type: string, required: true, default: "okdp-rustfs-root-change-me", minLength: 8, maxLength: 40 }
       dataStorage:   { type: string, required: true, default: "5Gi" }
       mcImage:       { type: string, required: true, default: "minio/mc:latest" }
   context:
@@ -221,6 +221,14 @@ modules:
           metadata:
             name: {{ $release }}-provision
             namespace: {{ $ns }}
+            annotations:
+              # Jobs are immutable: re-run on every install/upgrade instead of
+              # patching in place, so a rotated rootAccessKey/rootSecretKey
+              # (or any other provisioning input) is always picked up. Must
+              # run post-install/post-upgrade: the Deployment/Service it
+              # polls are regular (non-hook) chart resources applied first.
+              helm.sh/hook: post-install,post-upgrade
+              helm.sh/hook-delete-policy: before-hook-creation
           spec:
             backoffLimit: 20
             template:
