@@ -17,7 +17,7 @@
 # RustFS storage ADAPTER (ADR-0001)
 apiVersion: v1alpha1
 name: rustfs
-tag: 0.1.1
+tag: 0.1.2
 protected: false
 description: |
   RustFS is a high-performance, S3-compatible distributed object storage written in Rust.
@@ -199,6 +199,11 @@ modules:
               mc mb --ignore-existing rf/{{ $b.name }}
               {{- if $b.anonymousRead }}
               mc anonymous set download rf/{{ $b.name }}
+              {{- end }}
+              {{- /* S3 has no real directories: consumers that require a prefix to already exist before they write anything to it (e.g. Spark's FsHistoryProvider,
+                     which fails to even start if its configured log directory is absent) need an empty marker object created for it upfront. */ -}}
+              {{- range $p := ($b.paths | default list) }}
+              printf '' | mc pipe rf/{{ $b.name }}/{{ $p }}/.keep
               {{- end }}
               {{- end }}
               echo ">> creating users + policies from grants"
