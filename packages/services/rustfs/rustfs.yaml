@@ -14,46 +14,76 @@
 #  limitations under the License.
 #
 
-# RustFS storage ADAPTER (ADR-0001)
+# RustFS storage adapter. Produces one s3 Connection (output "s3"), consumes none.
 apiVersion: v1alpha1
 name: rustfs
-tag: 0.1.2
+tag: 1.0.0-rc.3-p02
 protected: false
 description: |
   RustFS is a high-performance, S3-compatible distributed object storage written in Rust.
 usage:
   text: |
     RustFS S3-compatible object storage.
-    S3 endpoint : {{ .Context.defaultStorage.provider.endpoints.apiUrl
-       | replace "{{ .Release.namespace }}" .Release.spec.targetNamespace
-       | replace "{{ .Release.metadata.name }}" .Release.metadata.name
-       | replace "{{ .Context.ingress.suffix }}" .Context.platform.ingress.suffix }}
+    S3 endpoint : https://rustfs-api-{{ .Release.spec.targetNamespace }}.{{ .Context.ingress.suffix }}
+    Console     : https://rustfs-{{ .Release.spec.targetNamespace }}.{{ .Context.ingress.suffix }}
 schema:
   parameters:
     properties:
-      rootAccessKey: { type: string, required: true, default: "okdpadmin", minLength: 3, maxLength: 20 }
-      rootSecretKey: { type: string, required: true, default: "okdp-rustfs-root-change-me", minLength: 8, maxLength: 40 }
-      dataStorage:   { type: string, required: true, default: "5Gi" }
-      mcImage:       { type: string, required: true, default: "minio/mc:latest" }
+      rootAccessKey: { title: "Admin | Root access key | | order:1 columns:2", type: string, required: true, default: "okdpadmin", minLength: 3, maxLength: 20 }
+      # No default: a secret key shipped with a package ends up in production.
+      rootSecretKey: { title: "Admin | Root secret key | | order:2 columns:2", type: string, required: true, minLength: 8, maxLength: 40 }
+      dataStorage: { title: "Storage | Data size | | order:1 columns:2", type: string, required: true, default: "5Gi" }
+      mcImage: { title: "Storage | Provisioning image | | order:2 columns:2 advanced:true", type: string, required: true, default: "minio/mc:latest" }
+      # S3 identities of the store, one entry per principal. actions are the
+      # neutral verbs (read, list, write, admin), scoped to buckets when
+      # buckets is set. sts marks a principal that needs full admin rights.
+      grants:
+        title: "Access | Grants | | order:1"
+        type: array
+        items:
+          properties:
+            principal: { type: string, required: true }
+            credentialsSecret:
+              required: true
+              properties:
+                name: { type: string, required: true }
+                accessKeyKey: { type: string, required: true }
+                secretKeyKey: { type: string, required: true }
+            actions:
+              type: array
+              items: { type: string }
+            buckets:
+              type: array
+              items: { type: string }
+            sts: { type: boolean, default: false }
+      # Buckets created at startup. paths seeds prefixes inside the bucket for
+      # consumers that require them to exist beforehand.
+      buckets:
+        title: "Access | Buckets | | order:2"
+        type: array
+        items:
+          properties:
+            name: { type: string, required: true }
+            anonymousRead: { type: boolean, default: false }
+            paths:
+              type: array
+              items: { type: string }
   context:
     properties:
-      platform:
+      certificateIssuers:
         required: true
         properties:
-          certificateIssuers:
-            required: true
+          selfSigned:
             properties:
-              selfSigned:
-                properties:
-                  name: { type: string, required: true }
-          storageClass:
-            required: true
-            properties:
-              data: { type: string, required: true }
-          ingress:
-            required: true
-            properties:
-              suffix: { type: string, required: true }
+              name: { type: string, required: true }
+      storageClass:
+        required: true
+        properties:
+          data: { type: string, required: true }
+      ingress:
+        required: true
+        properties:
+          suffix: { type: string, required: true }
 modules:
   - name: main
     timeout: 10m
@@ -61,24 +91,20 @@ modules:
       helmRepository:
         url: https://charts.rustfs.com
         chart: rustfs
-        version: 0.8.0
+        version: 1.0.0-rc.3
     values: |
-      {{- $storage := .Context.defaultStorage -}}
       {{- $release := printf "%v" .Release.metadata.name -}}
       {{- $ns := printf "%v" .Release.spec.targetNamespace -}}
-      {{- $domain := printf "%v" .Context.platform.ingress.suffix -}}
-      {{- $issuer := .Context.platform.certificateIssuers.selfSigned.name -}}
+      {{- $domain := printf "%v" .Context.ingress.suffix -}}
+      {{- $issuer := .Context.certificateIssuers.selfSigned.name -}}
 
-      {{- $s3Url := $storage.provider.endpoints.apiUrl
-         | replace "{{ .Release.namespace }}" $ns
-         | replace "{{ .Release.metadata.name }}" $release
-         | replace "{{ .Context.ingress.suffix }}" $domain -}}
-      {{- $consoleUrl := $storage.provider.endpoints.consoleUrl
-         | replace "{{ .Release.namespace }}" $ns
-         | replace "{{ .Release.metadata.name }}" $release
-         | replace "{{ .Context.ingress.suffix }}" $domain -}}
-      {{- $s3Host := regexReplaceAll "^https?://" $s3Url "" -}}
-      {{- $consoleHost := regexReplaceAll "^https?://" $consoleUrl "" -}}
+      {{- $grants := .Parameters.grants | default list -}}
+      {{- $buckets := .Parameters.buckets | default list -}}
+
+      {{- /* Host convention is <service>-<project>, never the release name: the console
+             prefixes instances with their project, which would double it. */ -}}
+      {{- $s3Host := printf "rustfs-api-%s.%s" $ns $domain -}}
+      {{- $consoleHost := printf "rustfs-%s.%s" $ns $domain -}}
 
       {{- $svc := printf "%s-svc" $release -}}
       {{- $rootSecret := printf "%s-secret" $release -}}
@@ -101,7 +127,7 @@ modules:
           enabled: false
       replicaCount: 1
       storageclass:
-        name: "{{ .Context.platform.storageClass.data }}"
+        name: "{{ .Context.storageClass.data }}"
         dataStorageSize: "{{ .Parameters.dataStorage }}"
         logStorageSize: "256Mi"
 
@@ -167,7 +193,7 @@ modules:
             tls:
               - hosts: [{{ $consoleHost }}]
                 secretName: {{ $release }}-console-tls
-        # ---- Provisioning: buckets + users + policies from the neutral contract ----
+        # ---- Provisioning: buckets + users + policies from the grants ----
         - apiVersion: v1
           kind: ConfigMap
           metadata:
@@ -175,7 +201,7 @@ modules:
             namespace: {{ $ns }}
           data:
             {{- /* one IAM policy file per non-admin grant */ -}}
-            {{- range $g := $storage.grants }}
+            {{- range $g := $grants }}
             {{- $isAdmin := or ($g.sts | default false) (has "admin" ($g.actions | default list)) }}
             {{- if not $isAdmin }}
             {{- $actions := list }}
@@ -195,7 +221,7 @@ modules:
               echo ">> waiting for RustFS admin API at {{ $endpoint }} ..."
               until mc alias set rf "{{ $endpoint }}" "$ROOT_AK" "$ROOT_SK" >/dev/null 2>&1; do sleep 3; done
               echo ">> creating buckets"
-              {{- range $b := $storage.buckets }}
+              {{- range $b := $buckets }}
               mc mb --ignore-existing rf/{{ $b.name }}
               {{- if $b.anonymousRead }}
               mc anonymous set download rf/{{ $b.name }}
@@ -207,7 +233,7 @@ modules:
               {{- end }}
               {{- end }}
               echo ">> creating users + policies from grants"
-              {{- range $g := $storage.grants }}
+              {{- range $g := $grants }}
               {{- $isAdmin := or ($g.sts | default false) (has "admin" ($g.actions | default list)) }}
               {{- $ak := printf "G_%s_AK" $g.principal }}
               {{- $sk := printf "G_%s_SK" $g.principal }}
@@ -250,7 +276,7 @@ modules:
                         valueFrom: { secretKeyRef: { name: {{ $rootSecret }}, key: RUSTFS_ACCESS_KEY } }
                       - name: ROOT_SK
                         valueFrom: { secretKeyRef: { name: {{ $rootSecret }}, key: RUSTFS_SECRET_KEY } }
-                      {{- range $g := $storage.grants }}
+                      {{- range $g := $grants }}
                       - name: G_{{ $g.principal }}_AK
                         valueFrom: { secretKeyRef: { name: {{ $g.credentialsSecret.name }}, key: {{ $g.credentialsSecret.accessKeyKey }} } }
                       - name: G_{{ $g.principal }}_SK
@@ -271,6 +297,19 @@ modules:
                   - name: policies
                     configMap:
                       name: {{ $release }}-provision
+
+# apiUrl external ingress, internalUrl in-cluster, consoleUrl web console.
+# No secretRef: consumers bring their own identity through the grants.
+outputs: |
+  - name: s3
+    contract: s3
+    values:
+      apiUrl: "https://rustfs-api-{{ .Release.spec.targetNamespace }}.{{ .Context.ingress.suffix }}"
+      internalUrl: "http://{{ .Release.metadata.name }}-svc.{{ .Release.spec.targetNamespace }}.svc.cluster.local:9000"
+      consoleUrl: "https://rustfs-{{ .Release.spec.targetNamespace }}.{{ .Context.ingress.suffix }}"
+      region: us-east-1
+      # RustFS serves buckets by path in a single-node sandbox: no per-bucket DNS.
+      pathStyle: true
 
 roles:
   - storage
