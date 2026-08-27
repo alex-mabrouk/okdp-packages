@@ -17,7 +17,7 @@
 # RustFS storage adapter. Produces one s3 Connection (output "s3"), consumes none.
 apiVersion: v1alpha1
 name: rustfs
-tag: 1.0.0-rc.3-p02
+tag: 1.0.0-rc.3-p05
 protected: false
 description: |
   RustFS is a high-performance, S3-compatible distributed object storage written in Rust.
@@ -26,6 +26,11 @@ usage:
     RustFS S3-compatible object storage.
     S3 endpoint : https://rustfs-api-{{ .Release.spec.targetNamespace }}.{{ .Context.ingress.suffix }}
     Console     : https://rustfs-{{ .Release.spec.targetNamespace }}.{{ .Context.ingress.suffix }}
+
+    First install with SSO on: the provisioning job registers the identity
+    provider after the server has started, and the admin config store is only
+    read at startup. Restart it once to activate the Keycloak button:
+      kubectl -n {{ .Release.spec.targetNamespace }} rollout restart deploy/{{ .Release.metadata.name }}
 schema:
   parameters:
     properties:
@@ -33,6 +38,7 @@ schema:
       # No default: a secret key shipped with a package ends up in production.
       rootSecretKey: { title: "Admin | Root secret key | | order:2 columns:2", type: string, required: true, minLength: 8, maxLength: 40 }
       dataStorage: { title: "Storage | Data size | | order:1 columns:2", type: string, required: true, default: "5Gi" }
+      caBundleSecret: { title: "Storage | CA bundle Secret | | order:3 advanced:true", type: string, required: true, default: "certs-bundle", description: "Secret holding ca.crt, trusted by the server when it calls the OIDC issuer." }
       mcImage: { title: "Storage | Provisioning image | | order:2 columns:2 advanced:true", type: string, required: true, default: "minio/mc:latest" }
       # S3 identities of the store, one entry per principal. actions are the
       # neutral verbs (read, list, write, admin), scoped to buckets when
@@ -56,6 +62,22 @@ schema:
               type: array
               items: { type: string }
             sts: { type: boolean, default: false }
+      # Claim carrying the policy names. Every one of its values must name an
+      # existing policy or the login is refused, so point it at a claim built
+      # for that purpose rather than at one carrying application roles.
+      oidcPolicyClaim: { title: "Access | OIDC policy claim | | order:4 advanced:true", type: string, required: true, default: "groups" }
+      oidcPolicies:
+        title: "Access | OIDC policies | | order:3"
+        type: array
+        items:
+          properties:
+            name: { type: string, required: true }
+            actions:
+              type: array
+              items: { type: string }
+            buckets:
+              type: array
+              items: { type: string }
       # Buckets created at startup. paths seeds prefixes inside the bucket for
       # consumers that require them to exist beforehand.
       buckets:
@@ -70,6 +92,13 @@ schema:
               items: { type: string }
   context:
     properties:
+      oidc:
+        required: true
+        properties:
+          issuerUri: { type: string, required: true }
+          enabled: { type: boolean, default: true }
+          displayName: { type: string, default: keycloak }
+          scope: { type: string, default: "openid profile email groups" }
       certificateIssuers:
         required: true
         properties:
@@ -100,6 +129,19 @@ modules:
 
       {{- $grants := .Parameters.grants | default list -}}
       {{- $buckets := .Parameters.buckets | default list -}}
+      {{- $oidcPolicies := .Parameters.oidcPolicies | default list -}}
+      {{- $oidcPolicyClaim := .Parameters.oidcPolicyClaim | default "groups" -}}
+
+      {{- $oidcEnabled := true -}}
+      {{- if hasKey .Context.oidc "enabled" }}{{- $oidcEnabled = .Context.oidc.enabled -}}{{ end -}}
+      {{- $oidcScopes := .Context.oidc.scope | default "openid profile email groups" | replace " " "," -}}
+      {{- $oidcDisplayName := .Context.oidc.displayName | default "keycloak" -}}
+      {{- $oauthSecret := printf "creds-%s-oauth2" $release -}}
+      {{- $oidcDiscoveryUrl := printf "%s/.well-known/openid-configuration" .Context.oidc.issuerUri -}}
+      {{- /* The SSRF guard refuses any origin that resolves to a private address. */ -}}
+      {{- $issuerParts := splitList "/" .Context.oidc.issuerUri -}}
+      {{- $oidcOrigin := printf "%s//%s" (index $issuerParts 0) (index $issuerParts 2) -}}
+      {{- $caSecret := .Parameters.caBundleSecret | default "certs-bundle" -}}
 
       {{- /* Host convention is <service>-<project>, never the release name: the console
              prefixes instances with their project, which would double it. */ -}}
@@ -135,6 +177,29 @@ modules:
         rustfs:
           access_key: "{{ .Parameters.rootAccessKey }}"
           secret_key: "{{ .Parameters.rootSecretKey }}"
+
+      {{- if $oidcEnabled }}
+      extraEnv:
+        - name: RUSTFS_BROWSER_REDIRECT_URL
+          value: "https://{{ $consoleHost }}"
+        - name: RUSTFS_OUTBOUND_ALLOW_ORIGINS
+          value: "{{ $oidcOrigin }}"
+        - name: SSL_CERT_FILE
+          value: /cacerts/ca.crt
+
+      extraVolumes:
+        - name: cacerts
+          secret:
+            secretName: {{ $caSecret }}
+
+      extraVolumeMounts:
+        - name: cacerts
+          mountPath: /cacerts
+
+      # Restart the server when the provider settings change
+      podAnnotations:
+        okdp.io/oidc-config: "{{ printf "%s|%s|%s|%s" $oidcDiscoveryUrl $oidcScopes $consoleHost $oidcPolicyClaim | sha256sum | trunc 16 }}"
+      {{- end }}
 
       # The chart's own ingress targets the console port; we manage BOTH ingresses (S3 + console)
       # ourselves via extraManifests so the S3 API is exposed on the endpoint port (9000).
@@ -215,6 +280,26 @@ modules:
               {{ dict "Version" "2012-10-17" "Statement" (list (dict "Effect" "Allow" "Action" ($actions | uniq) "Resource" ($resources | uniq))) | toJson }}
             {{- end }}
             {{- end }}
+            {{- /* one policy file per OIDC policy, named after the claim value */ -}}
+            {{- range $p := $oidcPolicies }}
+            {{- $isAdmin := has "admin" ($p.actions | default list) }}
+            {{- $resources := list }}
+            {{- range $b := ($p.buckets | default (list "*")) }}
+            {{- if eq $b "*" }}{{- $resources = concat $resources (list "arn:aws:s3:::*" "arn:aws:s3:::*/*") }}
+            {{- else }}{{- $resources = concat $resources (list (printf "arn:aws:s3:::%s" $b) (printf "arn:aws:s3:::%s/*" $b)) }}{{- end }}
+            {{- end }}
+            {{- $statements := list }}
+            {{- if $isAdmin }}
+            {{- /* RustFS rejects s3: and admin: actions mixed in one statement. */ -}}
+            {{- $statements = list (dict "Effect" "Allow" "Action" (list "s3:*") "Resource" ($resources | uniq)) (dict "Effect" "Allow" "Action" (list "admin:*") "Resource" (list "arn:aws:s3:::*")) }}
+            {{- else }}
+            {{- $actions := list }}
+            {{- range $v := $p.actions }}{{- with (index $verbMap $v) }}{{- $actions = concat $actions . }}{{- end }}{{- end }}
+            {{- $statements = list (dict "Effect" "Allow" "Action" ($actions | uniq) "Resource" ($resources | uniq)) }}
+            {{- end }}
+            oidc-policy-{{ $p.name }}.json: |
+              {{ dict "Version" "2012-10-17" "Statement" $statements | toJson }}
+            {{- end }}
             provision.sh: |
               #!/bin/sh
               set -eu
@@ -244,6 +329,26 @@ modules:
               {{- else }}
               mc admin policy create rf okdp-{{ $g.principal }} /policies/policy-{{ $g.principal }}.json || true
               mc admin policy attach rf okdp-{{ $g.principal }} --user "${{ $ak }}" || true
+              {{- end }}
+              {{- end }}
+              {{- if $oidcEnabled }}
+              echo ">> registering the OIDC provider in the admin config store"
+              mc admin config set rf identity_openid \
+                enable=on \
+                config_url="{{ $oidcDiscoveryUrl }}" \
+                client_id="$OIDC_CLIENT_ID" \
+                client_secret="$OIDC_CLIENT_SECRET" \
+                scopes="{{ $oidcScopes }}" \
+                redirect_uri="https://{{ $consoleHost }}/rustfs/admin/v3/oidc/callback/default" \
+                redirect_uri_dynamic=off \
+                display_name="{{ $oidcDisplayName }}" \
+                claim_name="{{ $oidcPolicyClaim }}" groups_claim="{{ $oidcPolicyClaim }}" \
+                username_claim=preferred_username email_claim=email
+              {{- end }}
+              {{- if $oidcPolicies }}
+              echo ">> creating OIDC policies (claim values map onto these names)"
+              {{- range $p := $oidcPolicies }}
+              mc admin policy create rf {{ $p.name }} /policies/oidc-policy-{{ $p.name }}.json || true
               {{- end }}
               {{- end }}
               echo ">> provisioning complete"
@@ -276,6 +381,12 @@ modules:
                         valueFrom: { secretKeyRef: { name: {{ $rootSecret }}, key: RUSTFS_ACCESS_KEY } }
                       - name: ROOT_SK
                         valueFrom: { secretKeyRef: { name: {{ $rootSecret }}, key: RUSTFS_SECRET_KEY } }
+                      {{- if $oidcEnabled }}
+                      - name: OIDC_CLIENT_ID
+                        valueFrom: { secretKeyRef: { name: {{ $oauthSecret }}, key: client_id } }
+                      - name: OIDC_CLIENT_SECRET
+                        valueFrom: { secretKeyRef: { name: {{ $oauthSecret }}, key: client_secret } }
+                      {{- end }}
                       {{- range $g := $grants }}
                       - name: G_{{ $g.principal }}_AK
                         valueFrom: { secretKeyRef: { name: {{ $g.credentialsSecret.name }}, key: {{ $g.credentialsSecret.accessKeyKey }} } }
