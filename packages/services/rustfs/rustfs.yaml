@@ -17,15 +17,16 @@
 # RustFS storage adapter. Produces one s3 Connection (output "s3"), consumes none.
 apiVersion: v1alpha1
 name: rustfs
-tag: 1.0.0-rc.3-p05
+tag: 1.0.0-rc.3-p07
 protected: false
 description: |
   RustFS is a high-performance, S3-compatible distributed object storage written in Rust.
 usage:
   text: |
+    {{- $host := printf "%s-%s" (trimPrefix (printf "%s-" .Release.spec.targetNamespace) .Release.metadata.name) .Release.spec.targetNamespace -}}
     RustFS S3-compatible object storage.
-    S3 endpoint : https://rustfs-api-{{ .Release.spec.targetNamespace }}.{{ .Context.ingress.suffix }}
-    Console     : https://rustfs-{{ .Release.spec.targetNamespace }}.{{ .Context.ingress.suffix }}
+    S3 endpoint : https://{{ $host }}-api.{{ .Context.ingress.suffix }}
+    Console     : https://{{ $host }}.{{ .Context.ingress.suffix }}
 
     First install with SSO on: the provisioning job registers the identity
     provider after the server has started, and the admin config store is only
@@ -143,16 +144,21 @@ modules:
       {{- $oidcOrigin := printf "%s//%s" (index $issuerParts 0) (index $issuerParts 2) -}}
       {{- $caSecret := .Parameters.caBundleSecret | default "certs-bundle" -}}
 
-      {{- /* Host convention is <service>-<project>, never the release name: the console
-             prefixes instances with their project, which would double it. */ -}}
-      {{- $s3Host := printf "rustfs-api-%s.%s" $ns $domain -}}
-      {{- $consoleHost := printf "rustfs-%s.%s" $ns $domain -}}
+      {{- /* Hosts derive from the Release, never from the product name, so a store
+             deployed under a neutral name takes over that name's ingress (a Release
+             'storage' in 'default' serves storage-default). The console prefixes its
+             instances with their project, which would double the namespace: strip it. */ -}}
+      {{- $base := trimPrefix (printf "%s-" $ns) $release -}}
+      {{- $s3Host := printf "%s-%s-api.%s" $base $ns $domain -}}
+      {{- $consoleHost := printf "%s-%s.%s" $base $ns $domain -}}
 
       {{- $svc := printf "%s-svc" $release -}}
       {{- $rootSecret := printf "%s-secret" $release -}}
       {{- $endpoint := printf "http://%s.%s:9000" $svc $ns -}}
 
-      {{- /* neutral verb -> S3 actions (admin handled separately via consoleAdmin) */ -}}
+      {{- /* neutral verb -> S3 actions (admin handled separately via consoleAdmin).
+             Verbs are matched case-insensitively: the same grants block must apply
+             to any store backend, whatever casing its own package documents. */ -}}
       {{- $verbMap := dict
           "read"  (list "s3:GetObject" "s3:GetBucketLocation")
           "list"  (list "s3:ListBucket" "s3:ListAllMyBuckets")
@@ -267,10 +273,11 @@ modules:
           data:
             {{- /* one IAM policy file per non-admin grant */ -}}
             {{- range $g := $grants }}
-            {{- $isAdmin := or ($g.sts | default false) (has "admin" ($g.actions | default list)) }}
+            {{- $verbs := list }}{{- range $v := ($g.actions | default list) }}{{- $verbs = append $verbs (lower $v) }}{{- end }}
+            {{- $isAdmin := or ($g.sts | default false) (has "admin" $verbs) }}
             {{- if not $isAdmin }}
             {{- $actions := list }}
-            {{- range $v := $g.actions }}{{- with (index $verbMap $v) }}{{- $actions = concat $actions . }}{{- end }}{{- end }}
+            {{- range $v := $verbs }}{{- with (index $verbMap $v) }}{{- $actions = concat $actions . }}{{- end }}{{- end }}
             {{- $resources := list }}
             {{- range $b := ($g.buckets | default (list "*")) }}
             {{- if eq $b "*" }}{{- $resources = concat $resources (list "arn:aws:s3:::*" "arn:aws:s3:::*/*") }}
@@ -282,7 +289,8 @@ modules:
             {{- end }}
             {{- /* one policy file per OIDC policy, named after the claim value */ -}}
             {{- range $p := $oidcPolicies }}
-            {{- $isAdmin := has "admin" ($p.actions | default list) }}
+            {{- $verbs := list }}{{- range $v := ($p.actions | default list) }}{{- $verbs = append $verbs (lower $v) }}{{- end }}
+            {{- $isAdmin := has "admin" $verbs }}
             {{- $resources := list }}
             {{- range $b := ($p.buckets | default (list "*")) }}
             {{- if eq $b "*" }}{{- $resources = concat $resources (list "arn:aws:s3:::*" "arn:aws:s3:::*/*") }}
@@ -294,7 +302,7 @@ modules:
             {{- $statements = list (dict "Effect" "Allow" "Action" (list "s3:*") "Resource" ($resources | uniq)) (dict "Effect" "Allow" "Action" (list "admin:*") "Resource" (list "arn:aws:s3:::*")) }}
             {{- else }}
             {{- $actions := list }}
-            {{- range $v := $p.actions }}{{- with (index $verbMap $v) }}{{- $actions = concat $actions . }}{{- end }}{{- end }}
+            {{- range $v := $verbs }}{{- with (index $verbMap $v) }}{{- $actions = concat $actions . }}{{- end }}{{- end }}
             {{- $statements = list (dict "Effect" "Allow" "Action" ($actions | uniq) "Resource" ($resources | uniq)) }}
             {{- end }}
             oidc-policy-{{ $p.name }}.json: |
@@ -319,7 +327,8 @@ modules:
               {{- end }}
               echo ">> creating users + policies from grants"
               {{- range $g := $grants }}
-              {{- $isAdmin := or ($g.sts | default false) (has "admin" ($g.actions | default list)) }}
+              {{- $verbs := list }}{{- range $v := ($g.actions | default list) }}{{- $verbs = append $verbs (lower $v) }}{{- end }}
+              {{- $isAdmin := or ($g.sts | default false) (has "admin" $verbs) }}
               {{- $ak := printf "G_%s_AK" $g.principal }}
               {{- $sk := printf "G_%s_SK" $g.principal }}
               # grant: {{ $g.principal }}{{ if $isAdmin }} (admin/sts -> consoleAdmin){{ end }}
@@ -412,12 +421,13 @@ modules:
 # apiUrl external ingress, internalUrl in-cluster, consoleUrl web console.
 # No secretRef: consumers bring their own identity through the grants.
 outputs: |
+  {{- $host := printf "%s-%s" (trimPrefix (printf "%s-" .Release.spec.targetNamespace) .Release.metadata.name) .Release.spec.targetNamespace -}}
   - name: s3
     contract: s3
     values:
-      apiUrl: "https://rustfs-api-{{ .Release.spec.targetNamespace }}.{{ .Context.ingress.suffix }}"
+      apiUrl: "https://{{ $host }}-api.{{ .Context.ingress.suffix }}"
       internalUrl: "http://{{ .Release.metadata.name }}-svc.{{ .Release.spec.targetNamespace }}.svc.cluster.local:9000"
-      consoleUrl: "https://rustfs-{{ .Release.spec.targetNamespace }}.{{ .Context.ingress.suffix }}"
+      consoleUrl: "https://{{ $host }}.{{ .Context.ingress.suffix }}"
       region: us-east-1
       # RustFS serves buckets by path in a single-node sandbox: no per-bucket DNS.
       pathStyle: true
