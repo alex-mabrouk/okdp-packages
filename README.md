@@ -10,12 +10,16 @@ This repository follows the same conventions as [`OKDP/platform-packages`](https
 |---|---|---|
 | [`rustfs`](./packages/services/rustfs/rustfs.yaml) | S3-compatible object storage | Binds the OKDP `defaultStorage` provider contract |
 | [`okdp-server`](./packages/system/okdp-server/okdp-server.yaml) | New OKDP console backend | Built from the fork pending upstream integration; image + chart under `ghcr.io/alex-mabrouk` |
+| [`ollama`](./packages/services/ollama/ollama.yaml) | Local LLM inference server | CPU mode, no GPU; the model is a parameter |
+| [`ollama-ui`](./packages/services/ollama-ui/ollama-ui.yaml) | Chat interface for `ollama` | Points at an `ollama` release in the same project |
 
 ## Structure
 
 ```
 packages/
 ├── services/               # Data/application services (catalog)
+│   ├── ollama/
+│   ├── ollama-ui/
 │   └── rustfs/
 └── system/                 # Platform components
     └── okdp-server/

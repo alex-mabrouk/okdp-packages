@@ -1,0 +1,94 @@
+#
+# Copyright 2026 The OKDP Authors.
+#
+
+apiVersion: v1alpha1
+name: ollama
+tag: 1.62.0-p01
+description: |
+  Ollama — local AI inference server for open-weight LLMs (Llama, Mistral, Gemma…).
+  Serves models via a simple REST API. Runs in CPU mode — no GPU required.
+
+schema:
+  parameters:
+    properties:
+      model:
+        type: string
+        default: "llama3.2:1b"
+        description: "Model to pull and serve at startup. Mistral (mistral:7b) is the sovereign EU option but needs ~6 GiB memory; llama3.2:1b runs in ~2 GiB."
+        enum:
+          - "llama3.2:1b"
+          - "llama3.2:3b"
+          - "mistral:7b"
+          - "mistral-nemo"
+          - "mixtral:8x7b"
+      memoryGi:
+        type: number
+        default: 8
+        description: "Memory allocated to the Ollama pod (GiB). Small models (1b) need ~2 GiB; mistral:7b needs ~6 GiB; mixtral:8x7b needs ~32 GiB."
+      storageGi:
+        type: integer
+        default: 10
+        description: "Persistent volume size for downloaded models (GiB)"
+  context:
+    properties:
+      platform:
+        required: true
+        properties:
+          certificateIssuers:
+            required: true
+            properties:
+              selfSigned:
+                properties:
+                  name: { type: string, required: true }
+          ingress:
+            required: true
+            properties:
+              suffix: { type: string, required: true }
+          storageClass:
+            required: true
+            properties:
+              workspace: { type: string, required: true }
+
+modules:
+  - name: main
+    timeout: 15m
+    source:
+      helmRepository:
+        url: https://otwld.github.io/ollama-helm/
+        chart: ollama
+        version: 1.62.0
+    values: |
+      ollama:
+        gpu:
+          enabled: false
+        models:
+          pull:
+            - {{ .Parameters.model }}
+
+      resources:
+        requests:
+          cpu: "500m"
+          memory: "{{ .Parameters.memoryGi }}Gi"
+        limits:
+          memory: "{{ .Parameters.memoryGi }}Gi"
+
+      persistentVolume:
+        enabled: true
+        size: "{{ .Parameters.storageGi }}Gi"
+        storageClass: "{{ .Context.platform.storageClass.workspace }}"
+
+      ingress:
+        enabled: true
+        className: nginx
+        annotations:
+          cert-manager.io/cluster-issuer: "{{ .Context.platform.certificateIssuers.selfSigned.name }}"
+        hosts:
+          - host: {{ .Release.metadata.name }}.{{ .Context.platform.ingress.suffix }}
+            paths:
+              - path: /
+                pathType: Prefix
+        tls:
+          - hosts:
+              - {{ .Release.metadata.name }}.{{ .Context.platform.ingress.suffix }}
+            secretName: {{ .Release.metadata.name }}-tls

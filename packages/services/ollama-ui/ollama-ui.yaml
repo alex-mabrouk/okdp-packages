@@ -1,0 +1,88 @@
+#
+# Copyright 2026 The OKDP Authors.
+#
+
+apiVersion: v1alpha1
+name: ollama-ui
+tag: 14.8.0-p01
+description: |
+  Open WebUI — self-hosted chat interface for Ollama.
+  Connects to an existing ollama instance deployed in the same project.
+  Includes conversation history, model management, and user accounts.
+
+schema:
+  parameters:
+    properties:
+      ollamaInstanceName:
+        type: string
+        default: "ollama"
+        description: "Name of the Ollama instance to connect to (must be deployed in the same project)"
+      storageGi:
+        type: integer
+        default: 2
+        description: "Persistent volume size for conversations, settings and user data (GiB)"
+  context:
+    properties:
+      platform:
+        required: true
+        properties:
+          certificateIssuers:
+            required: true
+            properties:
+              selfSigned:
+                properties:
+                  name: { type: string, required: true }
+          ingress:
+            required: true
+            properties:
+              suffix: { type: string, required: true }
+          storageClass:
+            required: true
+            properties:
+              workspace: { type: string, required: true }
+
+modules:
+  - name: main
+    timeout: 10m
+    source:
+      helmRepository:
+        url: https://helm.openwebui.com/
+        chart: open-webui
+        version: 14.8.0
+    values: |
+      ollama:
+        enabled: false
+
+      pipelines:
+        enabled: false
+
+      websocket:
+        enabled: false
+
+      ollamaUrls:
+        - http://{{ .Release.spec.targetNamespace }}-{{ .Parameters.ollamaInstanceName }}-main.{{ .Release.spec.targetNamespace }}.svc.cluster.local:11434
+
+      persistence:
+        enabled: true
+        size: "{{ .Parameters.storageGi }}Gi"
+        storageClass: "{{ .Context.platform.storageClass.workspace }}"
+
+      ingress:
+        enabled: true
+        class: nginx
+        annotations:
+          cert-manager.io/cluster-issuer: "{{ .Context.platform.certificateIssuers.selfSigned.name }}"
+        host: {{ .Release.metadata.name }}.{{ .Context.platform.ingress.suffix }}
+        tls: true
+        existingSecret: {{ .Release.metadata.name }}-tls
+
+      # Open WebUI loads a local sentence-transformers embedding model (all-MiniLM-L6-v2, ~600MB
+      # resident) on top of the backend at startup → it OOMKills (exit 137) under a 1Gi limit,
+      # crash-looping. The model is cached on the data PVC (/app/backend/data), so 2Gi lets it load
+      # once and run stably. (To drop the local model entirely instead, set RAG_EMBEDDING_ENGINE=ollama.)
+      resources:
+        requests:
+          cpu: "200m"
+          memory: "1Gi"
+        limits:
+          memory: "2Gi"
