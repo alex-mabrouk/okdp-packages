@@ -4,7 +4,7 @@
 
 apiVersion: v1alpha1
 name: ollama
-tag: 1.62.0-p01
+tag: 1.62.0-p02
 description: |
   Ollama — local AI inference server for open-weight LLMs (Llama, Mistral, Gemma…).
   Serves models via a simple REST API. Runs in CPU mode — no GPU required.
@@ -32,23 +32,20 @@ schema:
         description: "Persistent volume size for downloaded models (GiB)"
   context:
     properties:
-      platform:
+      certificateIssuers:
         required: true
         properties:
-          certificateIssuers:
-            required: true
+          selfSigned:
             properties:
-              selfSigned:
-                properties:
-                  name: { type: string, required: true }
-          ingress:
-            required: true
-            properties:
-              suffix: { type: string, required: true }
-          storageClass:
-            required: true
-            properties:
-              workspace: { type: string, required: true }
+              name: { type: string, required: true }
+      ingress:
+        required: true
+        properties:
+          suffix: { type: string, required: true }
+      storageClass:
+        required: true
+        properties:
+          workspace: { type: string, required: true }
 
 modules:
   - name: main
@@ -59,6 +56,10 @@ modules:
         chart: ollama
         version: 1.62.0
     values: |
+      {{- /* Host convention is <release without its project prefix>-<project>: the
+             console prefixes instances with their project, which would double it. */ -}}
+      {{- $ns := .Release.spec.targetNamespace -}}
+      {{- $host := printf "%s-%s.%s" (trimPrefix (printf "%s-" $ns) .Release.metadata.name) $ns .Context.ingress.suffix -}}
       ollama:
         gpu:
           enabled: false
@@ -76,19 +77,19 @@ modules:
       persistentVolume:
         enabled: true
         size: "{{ .Parameters.storageGi }}Gi"
-        storageClass: "{{ .Context.platform.storageClass.workspace }}"
+        storageClass: "{{ .Context.storageClass.workspace }}"
 
       ingress:
         enabled: true
         className: nginx
         annotations:
-          cert-manager.io/cluster-issuer: "{{ .Context.platform.certificateIssuers.selfSigned.name }}"
+          cert-manager.io/cluster-issuer: "{{ .Context.certificateIssuers.selfSigned.name }}"
         hosts:
-          - host: {{ .Release.metadata.name }}.{{ .Context.platform.ingress.suffix }}
+          - host: {{ $host }}
             paths:
               - path: /
                 pathType: Prefix
         tls:
           - hosts:
-              - {{ .Release.metadata.name }}.{{ .Context.platform.ingress.suffix }}
+              - {{ $host }}
             secretName: {{ .Release.metadata.name }}-tls

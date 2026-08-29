@@ -4,7 +4,7 @@
 
 apiVersion: v1alpha1
 name: ollama-ui
-tag: 14.8.0-p01
+tag: 14.8.0-p02
 description: |
   Open WebUI — self-hosted chat interface for Ollama.
   Connects to an existing ollama instance deployed in the same project.
@@ -23,23 +23,20 @@ schema:
         description: "Persistent volume size for conversations, settings and user data (GiB)"
   context:
     properties:
-      platform:
+      certificateIssuers:
         required: true
         properties:
-          certificateIssuers:
-            required: true
+          selfSigned:
             properties:
-              selfSigned:
-                properties:
-                  name: { type: string, required: true }
-          ingress:
-            required: true
-            properties:
-              suffix: { type: string, required: true }
-          storageClass:
-            required: true
-            properties:
-              workspace: { type: string, required: true }
+              name: { type: string, required: true }
+      ingress:
+        required: true
+        properties:
+          suffix: { type: string, required: true }
+      storageClass:
+        required: true
+        properties:
+          workspace: { type: string, required: true }
 
 modules:
   - name: main
@@ -50,6 +47,10 @@ modules:
         chart: open-webui
         version: 14.8.0
     values: |
+      {{- /* Host convention is <release without its project prefix>-<project>: the
+             console prefixes instances with their project, which would double it. */ -}}
+      {{- $ns := .Release.spec.targetNamespace -}}
+      {{- $host := printf "%s-%s.%s" (trimPrefix (printf "%s-" $ns) .Release.metadata.name) $ns .Context.ingress.suffix -}}
       ollama:
         enabled: false
 
@@ -65,14 +66,14 @@ modules:
       persistence:
         enabled: true
         size: "{{ .Parameters.storageGi }}Gi"
-        storageClass: "{{ .Context.platform.storageClass.workspace }}"
+        storageClass: "{{ .Context.storageClass.workspace }}"
 
       ingress:
         enabled: true
         class: nginx
         annotations:
-          cert-manager.io/cluster-issuer: "{{ .Context.platform.certificateIssuers.selfSigned.name }}"
-        host: {{ .Release.metadata.name }}.{{ .Context.platform.ingress.suffix }}
+          cert-manager.io/cluster-issuer: "{{ .Context.certificateIssuers.selfSigned.name }}"
+        host: {{ $host }}
         tls: true
         existingSecret: {{ .Release.metadata.name }}-tls
 
