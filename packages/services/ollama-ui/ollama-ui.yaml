@@ -4,7 +4,7 @@
 
 apiVersion: v1alpha1
 name: ollama-ui
-tag: 14.8.0-p02
+tag: 14.8.0-p03
 description: |
   Open WebUI — self-hosted chat interface for Ollama.
   Connects to an existing ollama instance deployed in the same project.
@@ -21,8 +21,31 @@ schema:
         type: integer
         default: 2
         description: "Persistent volume size for conversations, settings and user data (GiB)"
+      oidcAllowedRoles:
+        type: string
+        default: "data_engineer,data_scientist,business_analyst,data_steward,auditor,platform_admin"
+        description: "Comma-separated claim values allowed to sign in"
+      oidcAdminRoles:
+        type: string
+        default: "platform_admin"
+        description: "Comma-separated claim values granted the Open WebUI admin role"
+      oidcRolesClaim:
+        type: string
+        default: "groups"
+        description: "Token claim carrying the values matched against the role lists"
+      caBundleSecret:
+        type: string
+        default: "certs-bundle"
+        description: "Secret holding ca.crt, trusted when the backend calls the OIDC issuer"
   context:
     properties:
+      oidc:
+        required: true
+        properties:
+          issuerUri: { type: string, required: true }
+          enabled: { type: boolean, default: true }
+          displayName: { type: string, default: keycloak }
+          scope: { type: string, default: "openid profile email groups" }
       certificateIssuers:
         required: true
         properties:
@@ -51,6 +74,12 @@ modules:
              console prefixes instances with their project, which would double it. */ -}}
       {{- $ns := .Release.spec.targetNamespace -}}
       {{- $host := printf "%s-%s.%s" (trimPrefix (printf "%s-" $ns) .Release.metadata.name) $ns .Context.ingress.suffix -}}
+      {{- $oidcEnabled := true -}}
+      {{- if hasKey .Context.oidc "enabled" }}{{- $oidcEnabled = .Context.oidc.enabled -}}{{ end -}}
+      {{- $oidcScope := .Context.oidc.scope | default "openid profile email groups" -}}
+      {{- $oidcDisplayName := .Context.oidc.displayName | default "keycloak" -}}
+      {{- $oauthSecret := printf "creds-%s-oauth2" .Release.metadata.name -}}
+      {{- $caSecret := .Parameters.caBundleSecret | default "certs-bundle" -}}
       ollama:
         enabled: false
 
@@ -76,6 +105,48 @@ modules:
         host: {{ $host }}
         tls: true
         existingSecret: {{ .Release.metadata.name }}-tls
+
+      {{- if $oidcEnabled }}
+      sso:
+        enabled: true
+        enableSignup: true
+        mergeAccountsByEmail: true
+        enableRoleManagement: true
+        oidc:
+          enabled: true
+          clientExistingSecret: {{ $oauthSecret }}
+          clientIdExistingSecretKey: client_id
+          clientExistingSecretKey: client_secret
+          providerUrl: "{{ .Context.oidc.issuerUri }}/.well-known/openid-configuration"
+          providerName: "{{ $oidcDisplayName }}"
+          scopes: "{{ $oidcScope }}"
+        roleManagement:
+          rolesClaim: "{{ .Parameters.oidcRolesClaim }}"
+          allowedRoles: "{{ .Parameters.oidcAllowedRoles }}"
+          adminRoles: "{{ .Parameters.oidcAdminRoles }}"
+
+      extraEnvVars:
+        # The backend builds the OAuth redirect_uri from this, not from the request.
+        # Accounts appear on first provider login; the local form stays off.
+        - name: WEBUI_URL
+          value: "https://{{ $host }}"
+        - name: ENABLE_LOGIN_FORM
+          value: "false"
+        - name: REQUESTS_CA_BUNDLE
+          value: /cacerts/ca.crt
+        - name: SSL_CERT_FILE
+          value: /cacerts/ca.crt
+
+      volumes:
+        - name: cacerts
+          secret:
+            secretName: {{ $caSecret }}
+
+      volumeMounts:
+        container:
+          - name: cacerts
+            mountPath: /cacerts
+      {{- end }}
 
       # Open WebUI loads a local sentence-transformers embedding model (all-MiniLM-L6-v2, ~600MB
       # resident) on top of the backend at startup → it OOMKills (exit 137) under a 1Gi limit,
