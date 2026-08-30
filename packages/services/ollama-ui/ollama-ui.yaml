@@ -4,7 +4,7 @@
 
 apiVersion: v1alpha1
 name: ollama-ui
-tag: 16.1.0-p01
+tag: 16.1.0-p02
 description: |
   Open WebUI — self-hosted chat interface for Ollama.
   Connects to an existing ollama instance deployed in the same project.
@@ -125,7 +125,14 @@ modules:
           allowedRoles: "{{ .Parameters.oidcAllowedRoles }}"
           adminRoles: "{{ .Parameters.oidcAdminRoles }}"
 
+      {{- end }}
+
       extraEnvVars:
+        - { name: ENABLE_TITLE_GENERATION, value: "False" }
+        - { name: ENABLE_TAGS_GENERATION, value: "False" }
+        - { name: ENABLE_AUTOCOMPLETE_GENERATION, value: "False" }
+        - { name: ENABLE_RETRIEVAL_QUERY_GENERATION, value: "False" }
+        {{- if $oidcEnabled }}
         # The backend builds the OAuth redirect_uri from this, not from the request.
         # Accounts appear on first provider login; the local form stays off.
         - name: WEBUI_URL
@@ -136,7 +143,9 @@ modules:
           value: /cacerts/ca.crt
         - name: SSL_CERT_FILE
           value: /cacerts/ca.crt
+        {{- end }}
 
+      {{- if $oidcEnabled }}
       volumes:
         - name: cacerts
           secret:
