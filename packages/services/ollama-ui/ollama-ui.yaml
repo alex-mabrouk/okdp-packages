@@ -4,7 +4,7 @@
 
 apiVersion: v1alpha1
 name: ollama-ui
-tag: 16.1.0-p03
+tag: 16.1.0-p04
 description: |
   Open WebUI — self-hosted chat interface for Ollama.
   Connects to an existing ollama instance deployed in the same project.
@@ -100,7 +100,7 @@ modules:
         grant_types:
           - "authorization_code"
           - "client_credentials"
-        scope: {{ .Context.oidc.scope | quote }}
+        scope: {{ without (splitList " " (.Context.oidc.scope | default "openid profile email groups")) "openid" | join " " | quote }}
       tls:
         insecure: false
         certificate: "{{ $caSecret }}"
