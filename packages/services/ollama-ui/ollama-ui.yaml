@@ -83,8 +83,10 @@ modules:
       {{- $namespace := printf "%v" .Release.spec.targetNamespace -}}
       {{- $release := printf "%v" .Release.metadata.name -}}
       {{- $host := printf "%s-%s.%s" (trimPrefix (printf "%s-" $namespace) $release) $namespace .Context.ingress.suffix -}}
+      {{- $caSecret := .Parameters.caBundleSecret | default "certs-bundle" -}}
       {{- $dcr := .Context.oidc.dcr | default dict -}}
-      {{- if ne ($dcr.authMethod | default "") "anonymous" }}
+      {{- /* The mode is tested again here: values are rendered even when the module is disabled. */ -}}
+      {{- if and (eq (.Context.oidc.clientProvisioning | default "existing") "dcr") (ne ($dcr.authMethod | default "") "anonymous") }}
       {{- fail (printf "oidc.dcr.authMethod %q is not supported: this package registers anonymously" ($dcr.authMethod | default "")) }}
       {{- end }}
 
@@ -101,7 +103,7 @@ modules:
         scope: {{ .Context.oidc.scope | quote }}
       tls:
         insecure: false
-        certificate: "{{ .Parameters.caBundleSecret | default \"certs-bundle\" }}"
+        certificate: "{{ $caSecret }}"
       secret: "{{ $release }}-{{ $namespace }}-dcr"
       mapping:
         use_default: false
