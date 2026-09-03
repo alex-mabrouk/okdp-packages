@@ -17,7 +17,7 @@
 # RustFS storage adapter. Produces one s3 Connection (output "s3"), consumes none.
 apiVersion: v1alpha1
 name: rustfs
-tag: 1.0.0-rc.3-p08
+tag: 1.0.0-rc.3-p09
 protected: false
 description: |
   RustFS is a high-performance, S3-compatible distributed object storage written in Rust.
@@ -147,6 +147,7 @@ modules:
       {{- /* The policy claim rides its own scope, which the platform scopes do not carry. */ -}}
       {{- $scope := .Context.oidc.scope | default "openid profile email groups" -}}
       {{- with .Parameters.oidcPolicyScope }}{{- $scope = printf "%s %s" $scope . -}}{{- end }}
+      {{- $scope = without (splitList " " $scope) "openid" | join " " -}}
 
       ttl_seconds: 30
       registration_url: {{ $dcr.registrationUrl | quote }}
