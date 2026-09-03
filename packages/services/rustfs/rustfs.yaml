@@ -17,7 +17,7 @@
 # RustFS storage adapter. Produces one s3 Connection (output "s3"), consumes none.
 apiVersion: v1alpha1
 name: rustfs
-tag: 1.0.0-rc.3-p07
+tag: 1.0.0-rc.3-p08
 protected: false
 description: |
   RustFS is a high-performance, S3-compatible distributed object storage written in Rust.
@@ -67,6 +67,8 @@ schema:
       # existing policy or the login is refused, so point it at a claim built
       # for that purpose rather than at one carrying application roles.
       oidcPolicyClaim: { title: "Access | OIDC policy claim | | order:4 advanced:true", type: string, required: true, default: "groups" }
+      # Requested on top of the platform scopes when the client is registered through dcr. A claim built for the store is rarely part of the default scopes, and the provider omits it unless its scope is asked for.
+      oidcPolicyScope: { title: "Access | OIDC policy scope | | order:5 advanced:true", type: string, default: "", description: "Client scope requested so the policy claim is issued. Read only when oidc.clientProvisioning is dcr." }
       oidcPolicies:
         title: "Access | OIDC policies | | order:3"
         type: array
@@ -100,6 +102,12 @@ schema:
           enabled: { type: boolean, default: true }
           displayName: { type: string, default: keycloak }
           scope: { type: string, default: "openid profile email groups" }
+          clientProvisioning: { type: string, default: existing }
+          # Read only when clientProvisioning is dcr.
+          dcr:
+            properties:
+              registrationUrl: { type: string }
+              authMethod: { type: string }
       certificateIssuers:
         required: true
         properties:
@@ -115,6 +123,52 @@ schema:
         properties:
           suffix: { type: string, required: true }
 modules:
+  # Registers the OIDC client through anonymous Dynamic Client Registration. Active only when the platform provisions clients that way.
+  - name: oidc-dcr
+    # toString, not default: `false | default true` is true, sprig treats false as empty.
+    enabled: '{{ and (ne (.Context.oidc.enabled | toString) "false") (eq (.Context.oidc.clientProvisioning | default "existing") "dcr") }}'
+    timeout: 10m
+    source:
+      oci:
+        repository: quay.io/adaltas/oidc-dcr
+        tag: 0.3.2
+    values: |
+      {{- $ns := printf "%v" .Release.spec.targetNamespace -}}
+      {{- $release := printf "%v" .Release.metadata.name -}}
+      {{- /* Same base as the ingress hosts of the main module: the console strips the project prefix it adds to instance names, so the client is named after what the DNS shows, not after the Release. */ -}}
+      {{- $base := trimPrefix (printf "%s-" $ns) $release -}}
+      {{- $consoleHost := printf "%s-%s.%s" $base $ns .Context.ingress.suffix -}}
+      {{- $caSecret := .Parameters.caBundleSecret | default "certs-bundle" -}}
+      {{- $dcr := .Context.oidc.dcr | default dict -}}
+      {{- /* The mode is tested again here: values are rendered even when the module is disabled. */ -}}
+      {{- if and (eq (.Context.oidc.clientProvisioning | default "existing") "dcr") (ne ($dcr.authMethod | default "") "anonymous") }}
+      {{- fail (printf "oidc.dcr.authMethod %q is not supported: this package registers anonymously" ($dcr.authMethod | default "")) }}
+      {{- end }}
+      {{- /* The policy claim rides its own scope, which the platform scopes do not carry. */ -}}
+      {{- $scope := .Context.oidc.scope | default "openid profile email groups" -}}
+      {{- with .Parameters.oidcPolicyScope }}{{- $scope = printf "%s %s" $scope . -}}{{- end }}
+
+      ttl_seconds: 30
+      registration_url: {{ $dcr.registrationUrl | quote }}
+      request:
+        application_type: web
+        client_name: "{{ $base }}-{{ $ns }}"
+        redirect_uris:
+          - "https://{{ $consoleHost }}/rustfs/admin/v3/oidc/callback/default"
+        grant_types:
+          - "authorization_code"
+          - "client_credentials"
+        scope: {{ $scope | quote }}
+      tls:
+        insecure: false
+        certificate: "{{ $caSecret }}"
+      secret: "{{ $release }}-{{ $ns }}-dcr"
+      mapping:
+        use_default: false
+        key_mapping:
+          client_id: ".client_id"
+          client_secret: ".client_secret"
+
   - name: main
     timeout: 10m
     source:
@@ -137,7 +191,11 @@ modules:
       {{- if hasKey .Context.oidc "enabled" }}{{- $oidcEnabled = .Context.oidc.enabled -}}{{ end -}}
       {{- $oidcScopes := .Context.oidc.scope | default "openid profile email groups" | replace " " "," -}}
       {{- $oidcDisplayName := .Context.oidc.displayName | default "keycloak" -}}
+      {{- /* In dcr mode the registration job writes the credentials, under the same keys. */ -}}
       {{- $oauthSecret := printf "creds-%s-oauth2" $release -}}
+      {{- if eq (.Context.oidc.clientProvisioning | default "existing") "dcr" -}}
+      {{- $oauthSecret = printf "%s-%s-dcr" $release $ns -}}
+      {{- end -}}
       {{- $oidcDiscoveryUrl := printf "%s/.well-known/openid-configuration" .Context.oidc.issuerUri -}}
       {{- /* The SSRF guard refuses any origin that resolves to a private address. */ -}}
       {{- $issuerParts := splitList "/" .Context.oidc.issuerUri -}}
