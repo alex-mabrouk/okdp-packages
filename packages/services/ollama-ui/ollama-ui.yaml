@@ -4,7 +4,7 @@
 
 apiVersion: v1alpha1
 name: ollama-ui
-tag: 16.1.0-p02
+tag: 16.1.0-p03
 description: |
   Open WebUI — self-hosted chat interface for Ollama.
   Connects to an existing ollama instance deployed in the same project.
@@ -46,6 +46,12 @@ schema:
           enabled: { type: boolean, default: true }
           displayName: { type: string, default: keycloak }
           scope: { type: string, default: "openid profile email groups" }
+          clientProvisioning: { type: string, default: existing }
+          # Read only when clientProvisioning is dcr.
+          dcr:
+            properties:
+              registrationUrl: { type: string }
+              authMethod: { type: string }
       certificateIssuers:
         required: true
         properties:
@@ -62,6 +68,49 @@ schema:
           workspace: { type: string, required: true }
 
 modules:
+  # Registers the OIDC client through anonymous Dynamic Client Registration.
+  # Active only when the platform provisions clients that way; the credentials
+  # land in a Secret carrying the same keys the deployment reads.
+  - name: oidc-dcr
+    # toString, not default: `false | default true` is true, sprig treats false as empty.
+    enabled: '{{ and (ne (.Context.oidc.enabled | toString) "false") (eq (.Context.oidc.clientProvisioning | default "existing") "dcr") }}'
+    timeout: 10m
+    source:
+      oci:
+        repository: quay.io/adaltas/oidc-dcr
+        tag: 0.3.2
+    values: |
+      {{- $namespace := printf "%v" .Release.spec.targetNamespace -}}
+      {{- $release := printf "%v" .Release.metadata.name -}}
+      {{- $host := printf "%s-%s.%s" (trimPrefix (printf "%s-" $namespace) $release) $namespace .Context.ingress.suffix -}}
+      {{- $caSecret := .Parameters.caBundleSecret | default "certs-bundle" -}}
+      {{- $dcr := .Context.oidc.dcr | default dict -}}
+      {{- /* The mode is tested again here: values are rendered even when the module is disabled. */ -}}
+      {{- if and (eq (.Context.oidc.clientProvisioning | default "existing") "dcr") (ne ($dcr.authMethod | default "") "anonymous") }}
+      {{- fail (printf "oidc.dcr.authMethod %q is not supported: this package registers anonymously" ($dcr.authMethod | default "")) }}
+      {{- end }}
+
+      ttl_seconds: 30
+      registration_url: {{ $dcr.registrationUrl | quote }}
+      request:
+        application_type: web
+        client_name: "{{ $release }}-{{ $namespace }}"
+        redirect_uris:
+          - "https://{{ $host }}/oauth/oidc/callback"
+        grant_types:
+          - "authorization_code"
+          - "client_credentials"
+        scope: {{ .Context.oidc.scope | quote }}
+      tls:
+        insecure: false
+        certificate: "{{ $caSecret }}"
+      secret: "{{ $release }}-{{ $namespace }}-dcr"
+      mapping:
+        use_default: false
+        key_mapping:
+          client_id: ".client_id"
+          client_secret: ".client_secret"
+
   - name: main
     timeout: 10m
     source:
@@ -78,7 +127,11 @@ modules:
       {{- if hasKey .Context.oidc "enabled" }}{{- $oidcEnabled = .Context.oidc.enabled -}}{{ end -}}
       {{- $oidcScope := .Context.oidc.scope | default "openid profile email groups" -}}
       {{- $oidcDisplayName := .Context.oidc.displayName | default "keycloak" -}}
+      {{- /* In dcr mode the registration job writes the credentials, under the same keys. */ -}}
       {{- $oauthSecret := printf "creds-%s-oauth2" .Release.metadata.name -}}
+      {{- if eq (.Context.oidc.clientProvisioning | default "existing") "dcr" -}}
+      {{- $oauthSecret = printf "%s-%s-dcr" .Release.metadata.name $ns -}}
+      {{- end -}}
       {{- $caSecret := .Parameters.caBundleSecret | default "certs-bundle" -}}
       ollama:
         enabled: false
