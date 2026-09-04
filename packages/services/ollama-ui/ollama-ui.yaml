@@ -4,7 +4,7 @@
 
 apiVersion: v1alpha1
 name: ollama-ui
-tag: 16.1.0-p05
+tag: 16.5.0-p01
 description: |
   Open WebUI — self-hosted chat interface for Ollama.
   Connects to an existing ollama instance deployed in the same project.
@@ -130,7 +130,7 @@ modules:
       helmRepository:
         url: https://helm.openwebui.com/
         chart: open-webui
-        version: 16.1.0
+        version: 16.5.0
     values: |
       {{- /* Host convention is <release without its project prefix>-<project>: the
              console prefixes instances with their project, which would double it. */ -}}
