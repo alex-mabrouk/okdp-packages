@@ -4,7 +4,7 @@
 
 apiVersion: v1alpha1
 name: ollama-ui
-tag: 16.1.0-p04
+tag: 16.1.0-p05
 description: |
   Open WebUI — self-hosted chat interface for Ollama.
   Connects to an existing ollama instance deployed in the same project.
@@ -82,7 +82,8 @@ modules:
     values: |
       {{- $namespace := printf "%v" .Release.spec.targetNamespace -}}
       {{- $release := printf "%v" .Release.metadata.name -}}
-      {{- $host := printf "%s-%s.%s" (trimPrefix (printf "%s-" $namespace) $release) $namespace .Context.ingress.suffix -}}
+      {{- $base := trimPrefix (printf "%s-" $namespace) $release -}}
+      {{- $host := printf "%s-%s.%s" $base $namespace .Context.ingress.suffix -}}
       {{- $caSecret := .Parameters.caBundleSecret | default "certs-bundle" -}}
       {{- $dcr := .Context.oidc.dcr | default dict -}}
       {{- /* The mode is tested again here: values are rendered even when the module is disabled. */ -}}
@@ -94,7 +95,7 @@ modules:
       registration_url: {{ $dcr.registrationUrl | quote }}
       request:
         application_type: web
-        client_name: "{{ $release }}-{{ $namespace }}"
+        client_name: "{{ $base }}-{{ $namespace }}"
         redirect_uris:
           - "https://{{ $host }}/oauth/oidc/callback"
         grant_types:
@@ -110,6 +111,18 @@ modules:
         key_mapping:
           client_id: ".client_id"
           client_secret: ".client_secret"
+
+  # Unregisters that client when the Release is uninstalled.
+  - name: oidc-dcr-cleanup
+    enabled: '{{ and (ne (.Context.oidc.enabled | toString) "false") (eq (.Context.oidc.clientProvisioning | default "existing") "dcr") }}'
+    timeout: 5m
+    source:
+      local:
+        path: ../../../charts/oidc-dcr-cleanup
+    values: |
+      secret: "{{ .Release.metadata.name }}-{{ .Release.spec.targetNamespace }}-dcr"
+      tls:
+        certificate: "{{ .Parameters.caBundleSecret | default "certs-bundle" }}"
 
   - name: main
     timeout: 10m
