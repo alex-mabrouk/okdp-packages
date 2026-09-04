@@ -1,0 +1,9 @@
+# Secret written by the oidc-dcr registration job. Must carry the two keys
+# registration_client_uri and registration_access_token (RFC 7592).
+secret: ""
+# Image carrying curl and kubectl.
+image: alpine/k8s:1.31.1
+tls:
+  # Secret holding ca.crt, trusted when calling the OIDC provider.
+  certificate: certs-bundle
+  insecure: false

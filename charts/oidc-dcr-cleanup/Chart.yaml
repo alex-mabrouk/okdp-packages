@@ -1,0 +1,7 @@
+apiVersion: v2
+name: oidc-dcr-cleanup
+version: 0.1.0
+description: >-
+  Unregisters the OIDC client of a dynamically registered service when its
+  Release is uninstalled, and removes the Secret holding its credentials.
+  Companion to the oidc-dcr chart, which registers but never unregisters.

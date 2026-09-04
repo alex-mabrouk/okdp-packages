@@ -1,0 +1,91 @@
+{{- /* Reads the Secret the registration job wrote, then unregisters the client
+       with its own registration access token. No admin credentials needed. */ -}}
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: {{ .Release.Name }}-dcr-cleanup
+  annotations:
+    "helm.sh/hook": pre-delete
+    "helm.sh/hook-weight": "-10"
+    "helm.sh/hook-delete-policy": hook-succeeded,before-hook-creation
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: {{ .Release.Name }}-dcr-cleanup
+  annotations:
+    "helm.sh/hook": pre-delete
+    "helm.sh/hook-weight": "-10"
+    "helm.sh/hook-delete-policy": hook-succeeded,before-hook-creation
+rules:
+  - apiGroups: [""]
+    resources: ["secrets"]
+    resourceNames: ["{{ .Values.secret }}"]
+    verbs: ["get", "delete"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: {{ .Release.Name }}-dcr-cleanup
+  annotations:
+    "helm.sh/hook": pre-delete
+    "helm.sh/hook-weight": "-10"
+    "helm.sh/hook-delete-policy": hook-succeeded,before-hook-creation
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: {{ .Release.Name }}-dcr-cleanup
+subjects:
+  - kind: ServiceAccount
+    name: {{ .Release.Name }}-dcr-cleanup
+---
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: {{ .Release.Name }}-dcr-cleanup
+  annotations:
+    "helm.sh/hook": pre-delete
+    "helm.sh/hook-weight": "-5"
+    "helm.sh/hook-delete-policy": hook-succeeded,before-hook-creation
+spec:
+  backoffLimit: 0
+  template:
+    spec:
+      restartPolicy: Never
+      serviceAccountName: {{ .Release.Name }}-dcr-cleanup
+      containers:
+        - name: cleanup
+          image: {{ .Values.image | quote }}
+          command:
+            - sh
+            - -c
+            - |
+              # Never fail: a client already gone must not block the uninstall.
+              set -u
+              secret={{ .Values.secret | quote }}
+              json=$(kubectl get secret "$secret" -o json 2>/dev/null) || {
+                echo "INFO: no secret $secret, nothing to unregister"; exit 0; }
+              uri=$(echo "$json" | jq -r '.data.registration_client_uri // "" | @base64d')
+              rat=$(echo "$json" | jq -r '.data.registration_access_token // "" | @base64d')
+              if [ -n "$uri" ] && [ -n "$rat" ]; then
+                echo "INFO: unregistering $uri"
+                curl -sS -o /dev/null -w 'INFO: provider answered %{http_code}\n' \
+                  {{ if .Values.tls.insecure }}-k{{ else }}--cacert /cacerts/ca.crt{{ end }} \
+                  -X DELETE -H "Authorization: Bearer $rat" "$uri" || \
+                  echo "WARN: unregistration failed, the client stays in the provider"
+              else
+                echo "WARN: $secret carries no registration token, cannot unregister"
+              fi
+              kubectl delete secret "$secret" --ignore-not-found
+              exit 0
+          {{- if not .Values.tls.insecure }}
+          volumeMounts:
+            - name: cacerts
+              mountPath: /cacerts
+          {{- end }}
+      {{- if not .Values.tls.insecure }}
+      volumes:
+        - name: cacerts
+          secret:
+            secretName: {{ .Values.tls.certificate }}
+      {{- end }}
