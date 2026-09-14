@@ -1,0 +1,102 @@
+#
+# Copyright 2026 The OKDP Authors.
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#      http://www.apache.org/licenses/LICENSE-2.0
+#
+#  Unless required by applicable law or agreed to in writing, software
+#  distributed under the License is distributed on an "AS IS" BASIS,
+#  WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+#  See the License for the specific language governing permissions and
+#  limitations under the License.
+#
+
+# Single-node Kafka broker (KRaft, no Zookeeper), internal to the cluster only:
+# no ingress, no OIDC, no external listener. Meant for platform-internal event
+# streams (a Spark Structured Streaming consumer, a producer Deployment), not
+# for a client outside the cluster.
+apiVersion: v1alpha1
+name: kafka
+tag: 32.4.3-p01
+protected: false
+description: |
+  Apache Kafka (KRaft mode, single broker) for platform-internal event streams.
+usage:
+  text: |
+    Kafka is reachable only from inside the cluster (no ingress):
+      bootstrap server: {{ .Release.metadata.name }}.{{ .Release.spec.targetNamespace }}.svc.cluster.local:9092
+    No authentication: the client listener runs in PLAINTEXT, scoped to the
+    cluster network. Do not expose this Release outside the cluster as-is.
+schema:
+  parameters:
+    properties:
+      dataStorage: { title: "Storage | Data size | | order:1 columns:2", type: string, required: true, default: "10Gi" }
+      memoryGi: { title: "Sizing | Memory (GiB) | | order:2 columns:2", type: number, required: true, default: 2 }
+      cpu: { title: "Sizing | CPU | | order:3 columns:2", type: string, required: true, default: "500m" }
+      # Topics provisioned at install/upgrade. A consumer/producer created before
+      # its topic exists would otherwise rely on Kafka's own auto-creation,
+      # which the chart disables by default.
+      topics:
+        title: "Topics | Topics | | order:1"
+        type: array
+        items:
+          properties:
+            name: { type: string, required: true }
+            partitions: { type: integer, default: 1 }
+            replicationFactor: { type: integer, default: 1 }
+  context:
+    properties:
+      storageClass:
+        required: true
+        properties:
+          data: { type: string, required: true }
+modules:
+  - name: main
+    timeout: 15m
+    source:
+      helmRepository:
+        url: https://charts.bitnami.com/bitnami
+        chart: kafka
+        version: 32.4.3
+    values: |
+      {{- $topics := .Parameters.topics | default list -}}
+
+      # Combined mode: the single controller-eligible node also serves as broker.
+      controller:
+        replicaCount: 1
+        resources:
+          requests:
+            cpu: "{{ .Parameters.cpu }}"
+            memory: "{{ .Parameters.memoryGi }}Gi"
+          limits:
+            memory: "{{ .Parameters.memoryGi }}Gi"
+        persistence:
+          enabled: true
+          storageClass: "{{ .Context.storageClass.data }}"
+          size: "{{ .Parameters.dataStorage }}"
+      broker:
+        replicaCount: 0
+
+      # Cluster-internal only: no ingress, no client-facing TLS/SASL. Anything
+      # reaching this Release already runs inside the cluster network.
+      listeners:
+        client:
+          protocol: PLAINTEXT
+        controller:
+          protocol: PLAINTEXT
+        interbroker:
+          protocol: PLAINTEXT
+
+      {{- if $topics }}
+      provisioning:
+        enabled: true
+        topics:
+          {{- range $t := $topics }}
+          - name: {{ $t.name }}
+            partitions: {{ $t.partitions | default 1 }}
+            replicationFactor: {{ $t.replicationFactor | default 1 }}
+          {{- end }}
+      {{- end }}
