@@ -20,7 +20,7 @@
 # for a client outside the cluster.
 apiVersion: v1alpha1
 name: kafka
-tag: 32.4.3-p01
+tag: 32.4.3-p02
 protected: false
 description: |
   Apache Kafka (KRaft mode, single broker) for platform-internal event streams.
@@ -63,6 +63,14 @@ modules:
         version: 32.4.3
     values: |
       {{- $topics := .Parameters.topics | default list -}}
+
+      # Bitnami pulled its free-tier images off docker.io/bitnami/*; the same
+      # tags now live under docker.io/bitnamilegacy/*, unsigned hence the flag.
+      global:
+        security:
+          allowInsecureImages: true
+      image:
+        repository: bitnamilegacy/kafka
 
       # Combined mode: the single controller-eligible node also serves as broker.
       controller:
