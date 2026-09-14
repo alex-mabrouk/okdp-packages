@@ -1,0 +1,93 @@
+#
+# Copyright 2026 The OKDP Authors.
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#      http://www.apache.org/licenses/LICENSE-2.0
+#
+#  Unless required by applicable law or agreed to in writing, software
+#  distributed under the License is distributed on an "AS IS" BASIS,
+#  WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+#  See the License for the specific language governing permissions and
+#  limitations under the License.
+#
+
+# Redpanda Console — read-only browsing UI for an existing Kafka instance
+# (topics, live message tail, consumer groups). No auth in front of it: like
+# the kafka package itself, this is a sandbox/demo convenience, not meant to
+# carry sensitive data behind its ingress as-is.
+apiVersion: v1alpha1
+name: kafka-console
+tag: 3.9.0-p01
+protected: false
+description: |
+  Redpanda Console — web UI to browse an existing Kafka instance (topics, live
+  message tail, consumer groups). Works against vanilla Apache Kafka, not just Redpanda.
+schema:
+  parameters:
+    properties:
+      kafkaInstanceName:
+        type: string
+        default: "kafka"
+        description: "Name of the Kafka instance to connect to (must be deployed in the same project)"
+      memoryGi: { title: "Sizing | Memory (GiB) | | order:1 columns:2", type: number, required: true, default: 0.5 }
+      cpu: { title: "Sizing | CPU | | order:2 columns:2", type: string, required: true, default: "200m" }
+  context:
+    properties:
+      certificateIssuers:
+        required: true
+        properties:
+          selfSigned:
+            properties:
+              name: { type: string, required: true }
+      ingress:
+        required: true
+        properties:
+          suffix: { type: string, required: true }
+modules:
+  - name: main
+    timeout: 10m
+    source:
+      helmRepository:
+        url: https://charts.redpanda.com
+        chart: console
+        version: 3.9.0
+    values: |
+      {{- /* Host convention is <release without its project prefix>-<project>: the
+             console prefixes instances with their project, which would double it. */ -}}
+      {{- $ns := .Release.spec.targetNamespace -}}
+      {{- $host := printf "%s-%s.%s" (trimPrefix (printf "%s-" $ns) .Release.metadata.name) $ns .Context.ingress.suffix -}}
+      {{- /* Same convention as ollama-ui: the target instance's client service is
+             named after its own "main" module, in the same namespace. */ -}}
+      {{- $brokers := printf "%s-%s-main.%s.svc.cluster.local:9092" $ns .Parameters.kafkaInstanceName $ns -}}
+
+      config:
+        kafka:
+          brokers:
+            - "{{ $brokers }}"
+          tls:
+            enabled: false
+
+      resources:
+        requests:
+          cpu: "{{ .Parameters.cpu }}"
+          memory: "{{ .Parameters.memoryGi }}Gi"
+        limits:
+          memory: "{{ .Parameters.memoryGi }}Gi"
+
+      ingress:
+        enabled: true
+        className: nginx
+        annotations:
+          cert-manager.io/cluster-issuer: "{{ .Context.certificateIssuers.selfSigned.name }}"
+        hosts:
+          - host: {{ $host }}
+            paths:
+              - path: /
+                pathType: Prefix
+        tls:
+          - hosts:
+              - {{ $host }}
+            secretName: {{ .Release.metadata.name }}-tls
