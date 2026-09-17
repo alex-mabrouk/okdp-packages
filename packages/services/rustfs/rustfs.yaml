@@ -17,7 +17,7 @@
 # RustFS storage adapter. Produces one s3 Connection (output "s3"), consumes none.
 apiVersion: v1alpha1
 name: rustfs
-tag: 1.0.0-rc.3-p10
+tag: 1.0.0-rc.3-p11
 protected: false
 description: |
   RustFS is a high-performance, S3-compatible distributed object storage written in Rust.
@@ -41,6 +41,7 @@ schema:
       dataStorage: { title: "Storage | Data size | | order:1 columns:2", type: string, required: true, default: "5Gi" }
       caBundleSecret: { title: "Storage | CA bundle Secret | | order:3 advanced:true", type: string, required: true, default: "certs-bundle", description: "Secret holding ca.crt, trusted by the server when it calls the OIDC issuer." }
       mcImage: { title: "Storage | Provisioning image | | order:2 columns:2 advanced:true", type: string, required: true, default: "minio/mc:latest" }
+      memoryGi: { title: "Storage | Memory limit (GiB) | | order:4 columns:2 advanced:true", type: number, default: 2, multipleOf: 0.25, description: "Memory limit of the server container. The chart ships with no cap at all by default." }
       # S3 identities of the store, one entry per principal. actions are the
       # neutral verbs (read, list, write, admin), scoped to buckets when
       # buckets is set. sts marks a principal that needs full admin rights.
@@ -236,6 +237,13 @@ modules:
         distributed:
           enabled: false
       replicaCount: 1
+      resources:
+        requests:
+          cpu: "250m"
+          memory: "512Mi"
+        limits:
+          cpu: "2000m"
+          memory: "{{ .Parameters.memoryGi }}Gi"
       storageclass:
         name: "{{ .Context.storageClass.data }}"
         dataStorageSize: "{{ .Parameters.dataStorage }}"
