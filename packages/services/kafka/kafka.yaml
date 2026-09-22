@@ -14,28 +14,49 @@
 #  limitations under the License.
 #
 
-# Single-node Kafka broker (KRaft, no Zookeeper), internal to the cluster only:
-# no ingress, no OIDC, no external listener. Meant for platform-internal event
-# streams (a Spark Structured Streaming consumer, a producer Deployment), not
-# for a client outside the cluster.
+# KRaft Kafka (no Zookeeper), internal to the cluster only: no ingress, no
+# external listener. Meant for platform-internal event streams (a Spark
+# Structured Streaming consumer, a producer Deployment), not for a client
+# outside the cluster.
+# Client access is authenticated (SASL/SCRAM-SHA-512) but not yet encrypted:
+# the listener runs SASL_PLAINTEXT, scoped to the cluster network. TLS is a
+# planned follow-up, not done here — until then, treat credentials as
+# readable by anything that can already reach the cluster network, and do
+# not expose this Release outside the cluster as-is.
 apiVersion: v1alpha1
 name: kafka
-tag: 32.4.3-p02
+tag: 32.4.3-p03
 protected: false
 description: |
-  Apache Kafka (KRaft mode, single broker) for platform-internal event streams.
+  Apache Kafka (KRaft mode) for platform-internal event streams.
 usage:
   text: |
     Kafka is reachable only from inside the cluster (no ingress):
       bootstrap server: {{ .Release.metadata.name }}.{{ .Release.spec.targetNamespace }}.svc.cluster.local:9092
-    No authentication: the client listener runs in PLAINTEXT, scoped to the
-    cluster network. Do not expose this Release outside the cluster as-is.
+    Authenticated via SASL/SCRAM-SHA-512 with the configured users. The
+    listener is not encrypted (SASL_PLAINTEXT): traffic stays readable to
+    anything already on the cluster network. Do not expose this Release
+    outside the cluster as-is.
 schema:
   parameters:
     properties:
       dataStorage: { title: "Storage | Data size | | order:1 columns:2", type: string, required: true, default: "10Gi" }
       memoryGi: { title: "Sizing | Memory (GiB) | | order:2 columns:2", type: number, required: true, default: 2 }
-      cpu: { title: "Sizing | CPU | | order:3 columns:2", type: string, required: true, default: "500m" }
+      cpu: { title: "Sizing | CPU (vCPU) | | order:3 columns:2", type: number, required: true, default: 0.5, multipleOf: 0.25, description: "CPU request for the broker container. The limit is set to twice this value." }
+      replicaCount: { title: "Sizing | Broker count | | order:4 columns:2", type: integer, required: true, default: 1, minimum: 1, description: "Combined controller+broker KRaft nodes. Set to 3 (or more, odd) for controller quorum HA; 1 has no fault tolerance." }
+      # No default: shipping a password with the package would end up in
+      # production. At least one user is required so the Release is never
+      # left with only the chart's own auto-generated, unreadable credentials.
+      saslUsers:
+        title: "Access | SASL users | | order:2"
+        type: array
+        required: true
+        minItems: 1
+        description: "SASL/SCRAM-SHA-512 credentials for client access (e.g. one per consumer/producer, or one shared with kafka-console)."
+        items:
+          properties:
+            username: { type: string, required: true }
+            password: { type: string, required: true }
       # Topics provisioned at install/upgrade. A consumer/producer created before
       # its topic exists would otherwise rely on Kafka's own auto-creation,
       # which the chart disables by default.
@@ -63,6 +84,13 @@ modules:
         version: 32.4.3
     values: |
       {{- $topics := .Parameters.topics | default list -}}
+      {{- $saslUsers := .Parameters.saslUsers -}}
+      {{- $saslUsernames := list -}}
+      {{- $saslPasswords := list -}}
+      {{- range $u := $saslUsers }}
+      {{- $saslUsernames = append $saslUsernames $u.username -}}
+      {{- $saslPasswords = append $saslPasswords $u.password -}}
+      {{- end }}
 
       # Bitnami pulled its free-tier images off docker.io/bitnami/*; the same
       # tags now live under docker.io/bitnamilegacy/*, unsigned hence the flag.
@@ -72,14 +100,16 @@ modules:
       image:
         repository: bitnamilegacy/kafka
 
-      # Combined mode: the single controller-eligible node also serves as broker.
+      # Combined mode: every controller-eligible node also serves as broker.
+      # replicaCount 1 has no controller quorum, hence no fault tolerance.
       controller:
-        replicaCount: 1
+        replicaCount: {{ .Parameters.replicaCount }}
         resources:
           requests:
             cpu: "{{ .Parameters.cpu }}"
             memory: "{{ .Parameters.memoryGi }}Gi"
           limits:
+            cpu: "{{ mulf (float64 .Parameters.cpu) 2 }}"
             memory: "{{ .Parameters.memoryGi }}Gi"
         persistence:
           enabled: true
@@ -88,15 +118,19 @@ modules:
       broker:
         replicaCount: 0
 
-      # Cluster-internal only: no ingress, no client-facing TLS/SASL. Anything
-      # reaching this Release already runs inside the cluster network.
-      listeners:
+      # Client listener stays on the chart's own default (SASL_PLAINTEXT):
+      # authenticated, not encrypted. TLS is a follow-up, not done here.
+      # Inter-broker and controller traffic keep the chart's default too —
+      # SASL_PLAINTEXT with a random password the chart generates itself,
+      # never exposed as a package parameter.
+      # enabledMechanisms is left at the chart default (PLAIN, SCRAM-SHA-256,
+      # SCRAM-SHA-512): interBrokerMechanism/controllerMechanism default to
+      # PLAIN and must stay in that list, so it cannot be narrowed to
+      # SCRAM-SHA-512 alone without also moving those off PLAIN.
+      sasl:
         client:
-          protocol: PLAINTEXT
-        controller:
-          protocol: PLAINTEXT
-        interbroker:
-          protocol: PLAINTEXT
+          users: {{ join "," $saslUsernames | quote }}
+          passwords: {{ join "," $saslPasswords | quote }}
 
       {{- if $topics }}
       provisioning:

@@ -15,12 +15,13 @@
 #
 
 # Redpanda Console — read-only browsing UI for an existing Kafka instance
-# (topics, live message tail, consumer groups). No auth in front of it: like
-# the kafka package itself, this is a sandbox/demo convenience, not meant to
-# carry sensitive data behind its ingress as-is.
+# (topics, live message tail, consumer groups). Authenticates to Kafka with
+# SASL/SCRAM-SHA-512 (matching the kafka package), but its own web UI has no
+# login in front of it: anything that can reach the ingress can browse
+# topics and messages. Not meant to carry sensitive data as-is.
 apiVersion: v1alpha1
 name: kafka-console
-tag: 3.9.0-p01
+tag: 3.9.0-p02
 protected: false
 description: |
   Redpanda Console — web UI to browse an existing Kafka instance (topics, live
@@ -33,7 +34,10 @@ schema:
         default: "kafka"
         description: "Name of the Kafka instance to connect to (must be deployed in the same project)"
       memoryGi: { title: "Sizing | Memory (GiB) | | order:1 columns:2", type: number, required: true, default: 0.5 }
-      cpu: { title: "Sizing | CPU | | order:2 columns:2", type: string, required: true, default: "200m" }
+      cpu: { title: "Sizing | CPU (vCPU) | | order:2 columns:2", type: number, required: true, default: 0.25, multipleOf: 0.25, description: "CPU request for the console container. The limit is set to twice this value." }
+      saslUsername: { title: "Access | SASL username | | order:3 columns:2", type: string, required: true, description: "Must match one of the kafka instance's saslUsers entries." }
+      # No default: shipping a password with the package would end up in production.
+      saslPassword: { title: "Access | SASL password | | order:4 columns:2", type: string, required: true }
   context:
     properties:
       certificateIssuers:
@@ -67,14 +71,26 @@ modules:
         kafka:
           brokers:
             - "{{ $brokers }}"
+          sasl:
+            enabled: true
+            mechanism: SCRAM-SHA-512
+            username: "{{ .Parameters.saslUsername }}"
           tls:
             enabled: false
+
+      # The password itself never goes into `config` above: the chart injects
+      # it as KAFKA_SASL_PASSWORD from this secret, which Console reads at
+      # startup to fill config.kafka.sasl.password.
+      secret:
+        kafka:
+          saslPassword: "{{ .Parameters.saslPassword }}"
 
       resources:
         requests:
           cpu: "{{ .Parameters.cpu }}"
           memory: "{{ .Parameters.memoryGi }}Gi"
         limits:
+          cpu: "{{ mulf (float64 .Parameters.cpu) 2 }}"
           memory: "{{ .Parameters.memoryGi }}Gi"
 
       ingress:
