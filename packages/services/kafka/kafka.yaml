@@ -14,34 +14,33 @@
 #  limitations under the License.
 #
 
-# KRaft Kafka (no Zookeeper), internal to the cluster only: no ingress, no
-# external listener. Meant for platform-internal event streams (a Spark
-# Structured Streaming consumer, a producer Deployment), not for a client
-# outside the cluster.
-# Client access is authenticated (SASL/SCRAM-SHA-512) but not yet encrypted:
-# the listener runs SASL_PLAINTEXT, scoped to the cluster network. TLS is a
-# planned follow-up, not done here.
+# KRaft Kafka (no Zookeeper) via the Strimzi operator, internal to the cluster
+# only: no ingress, no external listener. Meant for platform-internal event
+# streams (a Spark Structured Streaming consumer, a producer Deployment), not
+# for a client outside the cluster.
+# Client access is authenticated (SASL/SCRAM-SHA-512) and encrypted (TLS on
+# the client listener). Requires the strimziKafkaOperator role to be deployed
+# first — see the strimzi-kafka-operator system package.
 apiVersion: v1alpha1
 name: kafka
-tag: 32.4.3-p04
+tag: 32.4.3-p05
 protected: false
 description: |
-  Apache Kafka (KRaft mode) for platform-internal event streams.
+  Apache Kafka (KRaft mode, Strimzi operator) for platform-internal event streams.
 usage:
   text: |
     Kafka is reachable only from inside the cluster (no ingress):
-      bootstrap server: {{ .Release.metadata.name }}.{{ .Release.spec.targetNamespace }}.svc.cluster.local:9092
-    Authenticated via SASL/SCRAM-SHA-512 with the configured users. The
-    listener is not encrypted (SASL_PLAINTEXT): traffic stays readable to
-    anything already on the cluster network. Do not expose this Release
-    outside the cluster as-is.
+      bootstrap server: {{ .Release.metadata.name }}-main-kafka-bootstrap.{{ .Release.spec.targetNamespace }}.svc.cluster.local:9093
+    Authenticated via SASL/SCRAM-SHA-512 with the configured users, over TLS
+    (the cluster's own CA — see the `<bootstrap-name>-cluster-ca-cert` secret).
+    Do not expose this Release outside the cluster as-is.
 schema:
   parameters:
     properties:
       dataStorage: { title: "Storage | Data size | | order:1 columns:2", type: string, required: true, default: "10Gi" }
       memoryGi: { title: "Sizing | Memory (GiB) | | order:2 columns:2", type: number, required: true, default: 2 }
       cpu: { title: "Sizing | CPU (vCPU) | | order:3 columns:2", type: number, required: true, default: 0.5, multipleOf: 0.25, description: "CPU request for the broker container. The limit is set to twice this value." }
-      replicaCount: { title: "Sizing | Broker count | | order:4 columns:2", type: integer, required: true, default: 1, minimum: 1, description: "Combined controller+broker KRaft nodes. Set to 3 (or more, odd) for controller quorum HA; 1 has no fault tolerance." }
+      replicaCount: { title: "Sizing | Broker count | | order:4 columns:2", type: integer, required: true, default: 1, minimum: 1, description: "Combined controller+broker KRaft nodes. Set to 3 (or more, odd) for controller quorum HA; 1 has no fault tolerance. Bumping this also requires raising the topic/transaction replication factors in the kafka-strimzi-resources chart." }
       saslUsers:
         title: "Access | SASL users | | order:2"
         type: array
@@ -71,29 +70,15 @@ modules:
   - name: main
     timeout: 15m
     source:
-      helmRepository:
-        url: https://charts.bitnami.com/bitnami
-        chart: kafka
-        version: 32.4.3
+      local:
+        path: ../../../charts/kafka-strimzi-resources
     values: |
-      {{- $topics := .Parameters.topics | default list -}}
-      {{- $saslUsers := .Parameters.saslUsers -}}
-      {{- $saslUsernames := list -}}
-      {{- $saslPasswords := list -}}
-      {{- range $u := $saslUsers }}
-      {{- $saslUsernames = append $saslUsernames $u.username -}}
-      {{- $saslPasswords = append $saslPasswords $u.password -}}
-      {{- end }}
-
-      # Bitnami pulled its free-tier images off docker.io/bitnami/*; the same
-      # tags now live under docker.io/bitnamilegacy/*, unsigned hence the flag.
-      global:
-        security:
-          allowInsecureImages: true
-      image:
-        repository: bitnamilegacy/kafka
-      controller:
-        replicaCount: {{ .Parameters.replicaCount }}
+      kafka:
+        version: "4.3.1"
+        replicas: {{ .Parameters.replicaCount }}
+        storage:
+          class: "{{ .Context.storageClass.data }}"
+          size: "{{ .Parameters.dataStorage }}"
         resources:
           requests:
             cpu: "{{ .Parameters.cpu }}"
@@ -101,30 +86,17 @@ modules:
           limits:
             cpu: "{{ mulf (float64 .Parameters.cpu) 2 }}"
             memory: "{{ .Parameters.memoryGi }}Gi"
-        persistence:
-          enabled: true
-          storageClass: "{{ .Context.storageClass.data }}"
-          size: "{{ .Parameters.dataStorage }}"
-      broker:
-        replicaCount: 0
-      sasl:
-        client:
-          users:
-            {{- range $saslUsernames }}
-            - {{ . | quote }}
-            {{- end }}
-          passwords:
-            {{- range $saslPasswords }}
-            - {{ . | quote }}
-            {{- end }}
-
-      {{- if $topics }}
-      provisioning:
-        enabled: true
-        topics:
-          {{- range $t := $topics }}
-          - name: {{ $t.name }}
-            partitions: {{ $t.partitions | default 1 }}
-            replicationFactor: {{ $t.replicationFactor | default 1 }}
-          {{- end }}
-      {{- end }}
+      saslUsers:
+        {{- range .Parameters.saslUsers }}
+        - username: {{ .username | quote }}
+          password: {{ .password | quote }}
+        {{- end }}
+      topics:
+        {{- range .Parameters.topics }}
+        - name: {{ .name | quote }}
+          partitions: {{ .partitions | default 1 }}
+          replicationFactor: {{ .replicationFactor | default 1 }}
+        {{- end }}
+roles: []
+dependencies:
+  - strimziKafkaOperator

@@ -16,12 +16,13 @@
 
 # Redpanda Console — read-only browsing UI for an existing Kafka instance
 # (topics, live message tail, consumer groups). Authenticates to Kafka with
-# SASL/SCRAM-SHA-512 (matching the kafka package), but its own web UI has no
-# login in front of it: anything that can reach the ingress can browse
-# topics and messages. Not meant to carry sensitive data as-is.
+# SASL/SCRAM-SHA-512 over TLS (matching the Strimzi-backed kafka package),
+# trusting that instance's own cluster CA. Its own web UI has no login in
+# front of it: anything that can reach the ingress can browse topics and
+# messages. Not meant to carry sensitive data as-is.
 apiVersion: v1alpha1
 name: kafka-console
-tag: 3.9.0-p03
+tag: 3.9.0-p04
 protected: false
 description: |
   Redpanda Console — web UI to browse an existing Kafka instance (topics, live
@@ -60,7 +61,8 @@ modules:
     values: |
       {{- $ns := .Release.spec.targetNamespace -}}
       {{- $host := printf "%s-%s.%s" (trimPrefix (printf "%s-" $ns) .Release.metadata.name) $ns .Context.ingress.suffix -}}
-      {{- $brokers := printf "%s-%s-main.%s.svc.cluster.local:9092" $ns .Parameters.kafkaInstanceName $ns -}}
+      {{- $kafkaCluster := printf "%s-%s-main" $ns .Parameters.kafkaInstanceName -}}
+      {{- $brokers := printf "%s-kafka-bootstrap.%s.svc.cluster.local:9093" $kafkaCluster $ns -}}
 
       config:
         kafka:
@@ -71,7 +73,13 @@ modules:
             mechanism: SCRAM-SHA-512
             username: "{{ .Parameters.saslUsername }}"
           tls:
-            enabled: false
+            enabled: true
+            caFilepath: /etc/console/certs/ca.crt
+      secretMounts:
+        - name: kafka-ca
+          secretName: "{{ $kafkaCluster }}-cluster-ca-cert"
+          path: /etc/console/certs
+          defaultMode: 0440
       secret:
         kafka:
           saslPassword: "{{ .Parameters.saslPassword }}"

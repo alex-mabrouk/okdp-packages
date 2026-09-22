@@ -1,0 +1,56 @@
+#
+# Copyright 2026 The OKDP Authors.
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#      http://www.apache.org/licenses/LICENSE-2.0
+#
+#  Unless required by applicable law or agreed to in writing, software
+#  distributed under the License is distributed on an "AS IS" BASIS,
+#  WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+#  See the License for the specific language governing permissions and
+#  limitations under the License.
+#
+
+# Cluster-wide operator for the Kafka, KafkaNodePool, KafkaUser and KafkaTopic
+# CRDs. Kafka packages (e.g. `kafka`) depend on this being installed first via
+# the `strimziKafkaOperator` role.
+
+apiVersion: v1alpha1
+name: strimzi-kafka-operator
+tag: 1.2.0-p01
+protected: true
+description: |
+  Strimzi Kafka Operator: runs Apache Kafka in KRaft mode on Kubernetes, with native SASL/SCRAM
+  and TLS support via the Kafka, KafkaNodePool, KafkaUser and KafkaTopic CRDs.
+usage:
+  text: |
+    The operator watches every namespace for Kafka/KafkaNodePool/KafkaUser/KafkaTopic resources.
+    Projects deploying the `kafka` package get their broker provisioned here.
+schema:
+  parameters:
+    properties: {}
+  context:
+    properties: {}
+modules:
+  - name: main
+    timeout: 10m
+    source:
+      helmRepository:
+        url: https://strimzi.io/charts/
+        chart: strimzi-kafka-operator
+        version: "1.2.0"
+    values: |
+      watchAnyNamespace: true
+    # helm upgrade never touches CRDs (Helm limitation) — force Flux to keep
+    # Kafka/KafkaNodePool/KafkaUser/KafkaTopic CRDs in sync on every reconcile.
+    specPatch: |
+      install:
+        crds: CreateReplace
+      upgrade:
+        crds: CreateReplace
+roles:
+  - strimziKafkaOperator
+dependencies: []
