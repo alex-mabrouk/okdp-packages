@@ -20,12 +20,10 @@
 # outside the cluster.
 # Client access is authenticated (SASL/SCRAM-SHA-512) but not yet encrypted:
 # the listener runs SASL_PLAINTEXT, scoped to the cluster network. TLS is a
-# planned follow-up, not done here — until then, treat credentials as
-# readable by anything that can already reach the cluster network, and do
-# not expose this Release outside the cluster as-is.
+# planned follow-up, not done here.
 apiVersion: v1alpha1
 name: kafka
-tag: 32.4.3-p03
+tag: 32.4.3-p04
 protected: false
 description: |
   Apache Kafka (KRaft mode) for platform-internal event streams.
@@ -44,9 +42,6 @@ schema:
       memoryGi: { title: "Sizing | Memory (GiB) | | order:2 columns:2", type: number, required: true, default: 2 }
       cpu: { title: "Sizing | CPU (vCPU) | | order:3 columns:2", type: number, required: true, default: 0.5, multipleOf: 0.25, description: "CPU request for the broker container. The limit is set to twice this value." }
       replicaCount: { title: "Sizing | Broker count | | order:4 columns:2", type: integer, required: true, default: 1, minimum: 1, description: "Combined controller+broker KRaft nodes. Set to 3 (or more, odd) for controller quorum HA; 1 has no fault tolerance." }
-      # No default: shipping a password with the package would end up in
-      # production. At least one user is required so the Release is never
-      # left with only the chart's own auto-generated, unreadable credentials.
       saslUsers:
         title: "Access | SASL users | | order:2"
         type: array
@@ -57,9 +52,7 @@ schema:
           properties:
             username: { type: string, required: true }
             password: { type: string, required: true }
-      # Topics provisioned at install/upgrade. A consumer/producer created before
-      # its topic exists would otherwise rely on Kafka's own auto-creation,
-      # which the chart disables by default.
+      # Topics provisioned at install/upgrade.
       topics:
         title: "Topics | Topics | | order:1"
         type: array
@@ -99,9 +92,6 @@ modules:
           allowInsecureImages: true
       image:
         repository: bitnamilegacy/kafka
-
-      # Combined mode: every controller-eligible node also serves as broker.
-      # replicaCount 1 has no controller quorum, hence no fault tolerance.
       controller:
         replicaCount: {{ .Parameters.replicaCount }}
         resources:
@@ -117,20 +107,16 @@ modules:
           size: "{{ .Parameters.dataStorage }}"
       broker:
         replicaCount: 0
-
-      # Client listener stays on the chart's own default (SASL_PLAINTEXT):
-      # authenticated, not encrypted. TLS is a follow-up, not done here.
-      # Inter-broker and controller traffic keep the chart's default too —
-      # SASL_PLAINTEXT with a random password the chart generates itself,
-      # never exposed as a package parameter.
-      # enabledMechanisms is left at the chart default (PLAIN, SCRAM-SHA-256,
-      # SCRAM-SHA-512): interBrokerMechanism/controllerMechanism default to
-      # PLAIN and must stay in that list, so it cannot be narrowed to
-      # SCRAM-SHA-512 alone without also moving those off PLAIN.
       sasl:
         client:
-          users: {{ join "," $saslUsernames | quote }}
-          passwords: {{ join "," $saslPasswords | quote }}
+          users:
+            {{- range $saslUsernames }}
+            - {{ . | quote }}
+            {{- end }}
+          passwords:
+            {{- range $saslPasswords }}
+            - {{ . | quote }}
+            {{- end }}
 
       {{- if $topics }}
       provisioning:

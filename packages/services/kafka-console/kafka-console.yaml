@@ -21,7 +21,7 @@
 # topics and messages. Not meant to carry sensitive data as-is.
 apiVersion: v1alpha1
 name: kafka-console
-tag: 3.9.0-p02
+tag: 3.9.0-p03
 protected: false
 description: |
   Redpanda Console — web UI to browse an existing Kafka instance (topics, live
@@ -36,7 +36,6 @@ schema:
       memoryGi: { title: "Sizing | Memory (GiB) | | order:1 columns:2", type: number, required: true, default: 0.5 }
       cpu: { title: "Sizing | CPU (vCPU) | | order:2 columns:2", type: number, required: true, default: 0.25, multipleOf: 0.25, description: "CPU request for the console container. The limit is set to twice this value." }
       saslUsername: { title: "Access | SASL username | | order:3 columns:2", type: string, required: true, description: "Must match one of the kafka instance's saslUsers entries." }
-      # No default: shipping a password with the package would end up in production.
       saslPassword: { title: "Access | SASL password | | order:4 columns:2", type: string, required: true }
   context:
     properties:
@@ -59,12 +58,8 @@ modules:
         chart: console
         version: 3.9.0
     values: |
-      {{- /* Host convention is <release without its project prefix>-<project>: the
-             console prefixes instances with their project, which would double it. */ -}}
       {{- $ns := .Release.spec.targetNamespace -}}
       {{- $host := printf "%s-%s.%s" (trimPrefix (printf "%s-" $ns) .Release.metadata.name) $ns .Context.ingress.suffix -}}
-      {{- /* Same convention as ollama-ui: the target instance's client service is
-             named after its own "main" module, in the same namespace. */ -}}
       {{- $brokers := printf "%s-%s-main.%s.svc.cluster.local:9092" $ns .Parameters.kafkaInstanceName $ns -}}
 
       config:
@@ -77,21 +72,16 @@ modules:
             username: "{{ .Parameters.saslUsername }}"
           tls:
             enabled: false
-
-      # The password itself never goes into `config` above: the chart injects
-      # it as KAFKA_SASL_PASSWORD from this secret, which Console reads at
-      # startup to fill config.kafka.sasl.password.
       secret:
         kafka:
           saslPassword: "{{ .Parameters.saslPassword }}"
-
       resources:
         requests:
-          cpu: "{{ .Parameters.cpu }}"
-          memory: "{{ .Parameters.memoryGi }}Gi"
+          cpu: "{{ printf "%.0fm" (mulf (float64 .Parameters.cpu) 1000) }}"
+          memory: "{{ printf "%.0fMi" (mulf .Parameters.memoryGi 1024) }}"
         limits:
-          cpu: "{{ mulf (float64 .Parameters.cpu) 2 }}"
-          memory: "{{ .Parameters.memoryGi }}Gi"
+          cpu: "{{ printf "%.0fm" (mulf (float64 .Parameters.cpu) 2000) }}"
+          memory: "{{ printf "%.0fMi" (mulf .Parameters.memoryGi 1024) }}"
 
       ingress:
         enabled: true
